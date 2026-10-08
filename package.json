@@ -1,0 +1,45 @@
+{
+	"name": "pi-durable-rpc-harness",
+	"version": "0.0.0",
+	"private": true,
+	"description": "pi-RPC-compatible harness backed by Pi Durable and PostgreSQL",
+	"type": "module",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"bin": {
+		"durable-rpc": "./dist/cli.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"build:bundle": "node scripts/build-bundle.mjs",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"test": "node --test",
+		"check": "node scripts/check.mjs"
+	},
+	"dependencies": {
+		"@earendil-works/chord": "1.1.0",
+		"@earendil-works/pi-ai": "1.1.0",
+		"@earendil-works/pi-codemode": "1.1.0",
+		"@earendil-works/pi-coding-agent": "1.1.0",
+		"@earendil-works/pi-durable": "1.1.0",
+		"@earendil-works/pi-mcp": "1.1.0",
+		"pg": "8.23.1"
+	},
+	"devDependencies": {
+		"@types/node": "22.8.7",
+		"@types/pg": "8.15.5",
+		"typescript": "5.8.3"
+	}
+}

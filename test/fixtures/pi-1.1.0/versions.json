@@ -1,0 +1,21 @@
+{
+	"pi": {
+		"package": "@earendil-works/pi-coding-agent",
+		"version": "1.1.0"
+	},
+	"harnessDependencies": {
+		"@earendil-works/chord": "1.1.0",
+		"@earendil-works/pi-ai": "1.1.0",
+		"@earendil-works/pi-codemode": "1.1.0",
+		"@earendil-works/pi-coding-agent": "1.1.0",
+		"@earendil-works/pi-durable": "1.1.0",
+		"@earendil-works/pi-mcp": "1.1.0",
+		"pg": "8.23.1"
+	},
+	"harnessDevDependencies": {
+		"@types/node": "22.8.7",
+		"@types/pg": "8.15.5",
+		"typescript": "5.8.3"
+	},
+	"capturedWith": "--mode rpc --no-session -ne -ns -np -nc"
+}

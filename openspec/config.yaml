@@ -1,0 +1,31 @@
+# OpenSpec configuration
+schema: spec-driven
+context: |-
+  Spec requirement bodies are machine-verified. They must be temporal
+  constraints, not free prose.
+
+  Task IDs: a task is written '1.3' in tasks.md and referenced as 'T1.3'
+  in a spec requirement. A requirement that references a task MUST use the
+  T-prefixed ID.
+rules:
+  specs:
+  - 'Every requirement MUST use an RFC 2119 keyword: MUST, SHALL, SHOULD, MAY, MUST NOT, SHALL NOT'
+  - 'A requirement BODY must be a temporal constraint. Grammar: "<task> SHALL <action> <TEMPORAL> <task> SHALL <action>". Exactly ONE temporal keyword per body.'
+  - 'Temporal keywords: BEFORE (completes first), AFTER (starts after), CONCURRENTLY (run together), IF...THEN (failure recovers), ALWAYS (invariant holds), AT MOST ONE (mutually exclusive)'
+  - Every SHALL MUST reference a real task ID from tasks.md with the T prefix (e.g. T1.1)
+  - Put the SHALL sentence in a body paragraph AFTER the heading; the heading alone is not parsed
+  - One constraint per body — if you need two orderings, write two requirements
+  - 'A capability/policy that is not a temporal constraint: write the literal marker ''human review only'' in the body'
+  - 'Give each requirement a "#### Scenario:" block: **GIVEN** (optional), **WHEN**, **THEN**'
+  - '**WHEN**/**THEN** steps SHOULD reference a task ID (e.g. "WHEN T3.2 runs") and use an RFC 2119 keyword'
+  - 'GOOD body: "T2.1 SHALL complete BEFORE T3.1 SHALL run"'
+  - 'GOOD scenario: "**WHEN** T2.1 completes" then "**THEN** T3.1 SHALL run"'
+  - 'BAD: "The system SHALL auto-detect changes" (no task ID, no temporal keyword)'
+  - 'BAD: "T1.1 SHALL be done quickly" ("quickly" is vague — define it measurably or use a temporal relation)'
+  - 'IF...THEN is for failure-recovery: "IF T1.1 fails THEN T2.1 SHALL run"'
+  - 'Write in Simplified Technical English (ASD-STE100): active voice and name the acting task by ID (e.g. "T2.1 SHALL resolve the path"), short sentences (<30 words), no vague words (robust, clean, good, user-friendly)'
+  - Before the first '### Requirement:', add a 'Task Reference' section with a markdown table '| T ID | Description |' listing every task ID used in the file and its one-line description (e.g. '| T1.1 | Implement single-file input detection |')
+  tasks:
+  - Give every task an N.M identifier (e.g. 1.3)
+  - Write each task as a short, imperative action (one instruction per task)
+  - Task descriptions become aliases for matching — make them descriptive but concise
