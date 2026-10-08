@@ -190,8 +190,9 @@ Settings that the harness reads live at every use (steering/follow-up mode, comp
 **Not loaded / not applied** (by design — extension packages are out of scope):
 
 - pi **extension packages** (`extensions:`, `packages:`, `-e`): the loader runs with `noExtensions: true`. Built-in `codemode`, `tool_search`, and MCP are provided instead by this repo's own adapters.
-- **Project trust** is not enforced: pi resolves project trust before loading project resources; this harness does not call that gate.
 - **Themes** and **prompt templates** are discovered but not used (the RPC surface has no terminal or editor to apply them to).
+
+Project resources are gated on trust: `AGENTS.md`, project skills, and other project resources load only when the project is trusted (`SettingsManager.isProjectTrusted()`), matching pi's order (trust, then project resources).
 
 ## Storage
 
@@ -231,14 +232,34 @@ Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `ass
 
 ## Tools
 
-| Tool | Source |
-| --- | --- |
-| `read`, `write`, `edit`, `bash` | durable's `CodingTools` |
-| `find`, `grep`, `ls` | this repo (`src/tools/`), over the call's `ExecutionEnv` |
-| `powershell` | durable, on Windows |
-| `codemode` | `@earendil-works/pi-codemode` sandbox; composes the agent's tools as `tools.<name>(args)` |
-| `tool_search` | searches the agent's available tools |
-| `mcp__<server>__<tool>` | `@earendil-works/pi-mcp`; configured via `mcp.json` |
+Tool definitions use **pi's exact descriptions and parameter schemas** (execution stays durable's); the differential harness verifies the model request is identical to pi's.
+
+| Tool | Source | Declared by default |
+| --- | --- | --- |
+| `read`, `bash`, `edit`, `write` | durable execution, pi's definitions | yes |
+| `ls`, `find`, `grep` | this repo (`src/tools/`), over the call's `ExecutionEnv` | no — enable with `defaultTools` |
+| `powershell` | durable, on Windows | on Windows |
+| `codemode` | `@earendil-works/pi-codemode` sandbox; composes tools as `tools.<name>(args)` | only when activated |
+| `tool_search` | searches tools that are not declared yet | only when activated |
+| `mcp__<server>__<tool>` | `@earendil-works/pi-mcp`, per `mcp.json` | per exposure (below) |
+| `read_mcp_resource` | MCP resources | per exposure |
+
+`codemode` and `tool_search` are activated automatically when a configured MCP server needs them (see below), or forced with the `defaultTools` setting (`["+codemode", "+tool_search"]`).
+
+### MCP tool exposure
+
+`mcp.json` is read from `$PI_CODING_AGENT_DIR/mcp.json` and `<cwd>/.pi/mcp.json`; a project entry without a transport overrides only `enabled`, `exposure`, and `toolExposure` of the global server of the same name. A server's `exposure` defaults to `codemode`; `toolExposure` overrides single tools (an exact name wins over a pattern; the first matching pattern wins). The exposures behave exactly as in pi:
+
+| Exposure | Declared to the model? | Reached through |
+| --- | --- | --- |
+| `direct` | yes | callable from codemode scripts |
+| `model-only` | yes | not callable |
+| `codemode` | no | codemode scripts |
+| `codemode-deferred` | no | codemode scripts (`tool_search` also loads it) |
+| `deferred` | no, until loaded | `tool_search`, then called directly |
+| `hidden` | no | only when listed in `toolExposure` |
+
+`tool_search` declares its matches by returning `control.addTools`, so they are declared from the next request and recorded in the transcript. `autoEnableCodemode: false` in `mcp.json` suppresses the codemode activation. A `mcp_servers` prompt section lists the codemode and deferred servers with how to reach them.
 
 Shell tool commands receive pi's session metadata (`PI_SESSION_ID`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL`) and the `AI_AGENT`/`PI_CODING_AGENT` markers.
 
@@ -250,8 +271,6 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 
 - **Extension UI** (`extension_ui_request/response`) is not implemented; inbound `extension_ui_response` records are ignored.
 - **Third-party pi extension packages** are not loaded.
-- **Project trust** is not enforced.
-- **MCP exposure modes** are simplified: discovered tools are declared directly (no `deferred`/`codemode` activation).
 - The `read` tool cannot read image files; image *input* in prompts is supported (mapped to content blocks).
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
 - **Single-executable (Node SEA) binary** is not shipped: it would require embedding the QuickJS wasm asset and postject injection. The supported artifacts are the ESM package and the JS bundle.
@@ -265,6 +284,7 @@ TEST_DATABASE_URL=postgres://user:pass@host/db \
   npm run check                                 # adds PostgreSQL conformance + parity tests
 node tools/capture-fixtures.mjs                 # re-capture golden pi RPC fixtures
 PI_ACCEPT_PROMPT=1 node tools/acceptance.mjs    # drive the harness as an external client
+npm run differential                            # diff the model request against pi (mock model + MCP fixture)
 ```
 
 PostgreSQL can be started locally, e.g.:
@@ -285,7 +305,9 @@ src/
   harness/
     config.ts                CLI + env startup contract
     settings.ts              HarnessSettings read live from pi settings
-    prompt.ts                pi prompt sections (system, AGENTS.md, skills, cwd)
+    system-prompt.ts         port of pi's system-prompt section builder
+    pi-internals.ts          access to pi's codemode description composer
+    prompt.ts                pi prompt sections (system, AGENTS.md, skills, cwd, mcp_servers)
     engine.ts                durable Harness over SQLite/Postgres/ephemeral
     events.ts                durable watchEvents -> pi event projection
     projection.ts            S1 transcript projection, control/policy entries, HTML export
@@ -300,12 +322,17 @@ src/
     database.ts              SqliteDatabase facade over one PG connection
     storage.ts               open storage, advisory lock
   tools/
-    index.ts                 ls/find/grep + platform shell + CodemodeTools extension
-    codemode.ts              QuickJS sandbox tool
-    tool-search.ts           tool discovery
-    mcp.ts                   mcp.json -> MCP client -> durable tools
+    pi-definitions.ts        pi's exact tool descriptions, schemas, and contributions
+    exposure.ts              mcp.json merge, exposure resolution, declared/callable predicates
+    state.ts                 process-wide exposure table
+    activate.ts              activation + declared-set computation
+    index.ts                 ls/find/grep + platform shell + PiCodingTools/CodemodeTools
+    codemode.ts              QuickJS sandbox tool + composed description
+    tool-search.ts           tool discovery (addTools)
+    mcp.ts                   mcp.json -> MCP client -> durable tools + resources
 test/                        unit + conformance + parity + fixtures
-tools/                       capture-fixtures.mjs, acceptance.mjs, rpc-call.mjs
+tools/                       capture-fixtures.mjs, acceptance.mjs, rpc-call.mjs,
+                             differential-mcp.mjs, fake-mcp-server.mjs
 scripts/                     check.mjs, build-bundle.mjs
 ```
 
@@ -314,4 +341,5 @@ scripts/                     check.mjs, build-bundle.mjs
 - RPC protocol: <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md>
 - Pi Durable: <https://github.com/earendil-works/pi/tree/main/packages/durable>
 - Session format: <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md>
-- This change: [`openspec/changes/archive/2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/)
+- This change: [`openspec/changes/archive/2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness)
+- MCP exposure parity: [`openspec/changes/archive/2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/)
