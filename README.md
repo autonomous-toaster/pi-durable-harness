@@ -45,6 +45,16 @@ printf '{"id":"1","type":"get_state"}\n{"id":"2","type":"prompt","message":"List
 
 Records are one compact JSON object per LF-terminated line. Commands carry an optional `id`; the matching response repeats it. Session events stream to stdout; diagnostics go to stderr. See [docs/rpc.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md) for the protocol.
 
+Or run a prompt in one shot, like `pi "do something"`:
+
+```bash
+node dist/cli.js "List the files"              # print the final answer, then exit
+node dist/cli.js --mode json "List the files"   # session header, then JSONL events
+node dist/cli.js --print "List the files"       # same as the first form
+echo "context" | node dist/cli.js "Summarize"   # piped stdin prepends to the prompt
+node dist/cli.js @notes.md "Review this"        # @file into the first prompt
+```
+
 ## Full example: podman + PostgreSQL
 
 A complete run against a containerized PostgreSQL, including a restart that proves the conversation is durable.
@@ -151,13 +161,22 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 
 | Flag | Meaning |
 | --- | --- |
-| `--mode rpc` | Accepted; the harness serves RPC only |
+| `message` (positional) | Run a prompt in one shot (print, or json with `--mode json`); rejected in RPC mode |
+| `-p`, `--print` | One-shot: run the prompts, write the final answer text, then exit |
+| `--mode json` | One-shot: write a session header and then JSONL events, then exit |
+| `--mode text` (default) | One-shot print when a prompt is given |
+| `--mode rpc` | Serve RPC on stdin; the default when no positional prompt is given |
+| `--` | Stop option parsing, so a prompt may begin with `-` |
+| `@path` | Include a text file or an image in the first prompt |
+| piped stdin | Prepended to the first prompt when stdin is not a terminal |
 | `--session-id <id>` / `--session <id>` / `-n, --name <name>` | Session key (selects the durable session) |
 | `-c, --continue` | Continue the session for the working directory |
 | `--no-session` | Ephemeral in-memory session |
 | `--session-dir <dir>` | Directory for local SQLite sessions |
 | `--provider <name>` / `--model <pattern>` / `--thinking <level>` | Initial model / thinking level |
 | `--offline` / `-h, --help` | Offline mode / usage |
+
+Without a positional prompt the harness serves RPC. A positional prompt selects a one-shot mode and the process exits `0` when the prompt is answered (non-zero otherwise). There is no interactive TUI: a terminal client uses RPC mode, so a prompt always runs one shot.
 
 Environment variables:
 
