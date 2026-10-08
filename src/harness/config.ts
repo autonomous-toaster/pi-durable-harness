@@ -13,7 +13,10 @@ function expandTilde(path: string): string {
 }
 
 export interface HarnessConfig {
-	readonly mode: "rpc";
+	readonly mode: string | undefined;
+	readonly interfaceName: "rpc" | "print" | "json";
+	readonly prompts: readonly string[];
+	readonly print: boolean;
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly sessionDir: string;
@@ -51,34 +54,49 @@ export function resolveConfig(
 	const warnings: string[] = [];
 	const values: Record<string, string> = {};
 	const flags = new Set<string>();
+	const prompts: string[] = [];
+	let optionsEnded = false;
 
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index]!;
-		if (!argument.startsWith("-")) continue;
-		const target = VALUE_FLAGS[argument];
-		if (target !== undefined) {
-			const value = argv[index + 1];
-			if (value === undefined || value.startsWith("-")) {
-				warnings.push(`missing value for ${argument}`);
-				continue;
-			}
-			values[target] = value;
-			index += 1;
+		if (!optionsEnded && argument === "--") {
+			optionsEnded = true;
 			continue;
 		}
-		flags.add(argument);
+		if (!optionsEnded && argument.startsWith("-")) {
+			const target = VALUE_FLAGS[argument];
+			if (target !== undefined) {
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("-")) {
+					warnings.push(`missing value for ${argument}`);
+					continue;
+				}
+				values[target] = value;
+				index += 1;
+				continue;
+			}
+			flags.add(argument);
+			continue;
+		}
+		prompts.push(argument);
 	}
 
-	const mode = values.mode ?? "rpc";
-	if (mode !== "rpc") warnings.push(`unsupported --mode ${mode}; the harness serves rpc only`);
+	const mode = values.mode;
+	if (mode !== undefined && mode !== "rpc" && mode !== "json" && mode !== "text") warnings.push(`unsupported --mode ${mode}`);
+	if (prompts.length > 0 && mode === "rpc") warnings.push("RPC mode takes prompts through the prompt command, not as arguments");
 	if (flags.has("--help") || flags.has("-h")) warnings.length = 0;
 
 	// `--session` may name a path or an id; both are treated as the session key.
 	const sessionKey = values.sessionKey ?? values.name;
 	const ephemeral = flags.has("--no-session");
+	const interfaceName: HarnessConfig["interfaceName"] =
+		prompts.length === 0 ? "rpc" : mode === "json" ? "json" : "print";
 
 	return {
-		mode: "rpc",
+		mode,
+		interfaceName,
+		prompts,
+		print: flags.has("--print") || flags.has("-p"),
 		cwd,
 		agentDir,
 		sessionDir: expandTilde(values.sessionDir ?? env.PI_CODING_AGENT_SESSION_DIR ?? join(agentDir, "sessions")),

@@ -36,3 +36,30 @@ test("a missing flag value is reported", () => {
 	assert.equal(config.model, undefined);
 	assert.equal(config.warnings.length, 1);
 });
+
+test("positional prompts select print mode", () => {
+	const config = resolveConfig(["--print", "do", "something"], {}, "/work");
+	assert.deepEqual(config.prompts, ["do", "something"]);
+	assert.equal(config.print, true);
+	assert.equal(config.interfaceName, "print");
+});
+
+test("a double dash ends option parsing", () => {
+	const config = resolveConfig(["--", "-not-a-flag"], {}, "/work");
+	assert.deepEqual(config.prompts, ["-not-a-flag"]);
+});
+
+test("--mode json selects json mode", () => {
+	const config = resolveConfig(["--mode", "json", "hi"], {}, "/work");
+	assert.equal(config.interfaceName, "json");
+});
+
+test("a positional prompt with rpc mode warns", () => {
+	const config = resolveConfig(["--mode", "rpc", "hi"], {}, "/work");
+	assert.ok(config.warnings.some((warning) => /RPC mode/.test(warning)));
+});
+
+test("no positional prompt keeps rpc mode", () => {
+	const config = resolveConfig(["--mode", "rpc"], {}, "/work");
+	assert.equal(config.interfaceName, "rpc");
+});

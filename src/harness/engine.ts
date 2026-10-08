@@ -257,6 +257,25 @@ export class HarnessEngine {
 		);
 	}
 
+	/** Submit one prompt and resolve to whether it was answered (task 2.2). */
+	async submitAndWait(content: string | readonly unknown[]): Promise<boolean> {
+		const settled = await (await this.submit(content)).wait(CONTEXT);
+		return settled.status === "done";
+	}
+
+	/** The last assistant answer text (task 2.3). */
+	async lastAssistantText(): Promise<string | undefined> {
+		const records = await this.entries();
+		const message = records.findLast((entry) => entry.kind === "pi.assistant")?.model?.[0] as
+			| { readonly content?: unknown }
+			| undefined;
+		const content = message?.content;
+		if (typeof content === "string") return content;
+		if (!Array.isArray(content)) return undefined;
+		const text = content.flatMap((block) => (block?.type === "text" ? [block.text] : [])).join("");
+		return text.length === 0 ? undefined : text;
+	}
+
 	/** Append an append-only control-plane transition (task 5.2). */
 	appendControl(data: ControlData): Promise<unknown> {
 		return this.#conversation.commit(
