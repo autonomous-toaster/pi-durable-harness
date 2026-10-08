@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { McpClient } from "@earendil-works/pi-mcp";
 import { createInMemoryTransportPair } from "@earendil-works/pi-mcp/testing";
-import { createMcpTool, loadMcpConfig } from "../dist/tools/mcp.js";
+import { createMcpTool, loadMcpSettings } from "../dist/tools/mcp.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -43,6 +43,6 @@ test("an MCP tool is exposed and calls the server", async () => {
 });
 
 test("a missing mcp.json yields no servers", async () => {
-	const config = await loadMcpConfig("/nonexistent-agent-dir", "/nonexistent-cwd");
-	assert.deepEqual(config.mcpServers, {});
+	const settings = await loadMcpSettings("/nonexistent-agent-dir", "/nonexistent-cwd");
+	assert.deepEqual(settings.servers, []);
 });

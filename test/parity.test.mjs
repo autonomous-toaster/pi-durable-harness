@@ -7,6 +7,7 @@ const fakeModel = { name: "faux", provider: "faux", id: "faux-1" };
 
 test("skills and project instructions are available to the model", async () => {
 	const extension = createPromptExtension({
+		cwd: "/repo",
 		agentsFiles: [{ path: "/repo/AGENTS.md", content: "Be careful." }],
 		skills: [{ name: "demo", description: "A demo skill", filePath: "/repo/.pi/skills/demo/SKILL.md", baseDir: "/repo/.pi/skills/demo", sourceInfo: {}, disableModelInvocation: false }],
 		systemPrompt: "You are a coding agent.",
@@ -15,7 +16,7 @@ test("skills and project instructions are available to the model", async () => {
 	const keys = extension.sections.map((section) => section.key);
 	assert.ok(keys.includes("skills"));
 	assert.ok(keys.includes("project_context"));
-	const input = { env: { cwd: "/repo" }, agent: { cwd: "/repo" } };
+	const input = { env: { cwd: "/repo" }, agent: { cwd: "/repo", tools: [{ name: "read" }, { name: "bash" }] } };
 	const project = await extension.sections.find((s) => s.key === "project_context").render(input);
 	assert.match(project, /AGENTS\.md/);
 	assert.match(project, /Be careful\./);

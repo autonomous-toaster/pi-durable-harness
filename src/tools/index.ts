@@ -6,10 +6,32 @@
  */
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
-import { createPowerShellTool } from "@earendil-works/pi-durable/tools";
+import { defineExtension, defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createBashTool, createEditTool, createPowerShellTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { codemodeTool } from "./codemode.js";
 import { toolSearchTool } from "./tool-search.js";
+import { PI_TOOL_DEFINITIONS, type PiToolDefinition } from "./pi-definitions.js";
+
+/** Present durable's execution under pi's exact description and parameters (task 5.5). */
+function present(base: ToolRegistration, definition: PiToolDefinition): ToolRegistration {
+	return defineTool({
+		name: base.name,
+		description: definition.description,
+		parameters: definition.parameters as never,
+		execute: (args, api, context) => base.execute(args as never, api, context),
+	});
+}
+
+/** `read`, `bash`, `edit`, and `write` with pi's definitions (task 5.5). */
+export const PiCodingTools = defineExtension({
+	name: "harness.coding-tools",
+	tools: [
+		present(createReadTool(), PI_TOOL_DEFINITIONS.read as PiToolDefinition),
+		present(createBashTool(), PI_TOOL_DEFINITIONS.bash as PiToolDefinition),
+		present(createEditTool(), PI_TOOL_DEFINITIONS.edit as PiToolDefinition),
+		present(createWriteTool(), PI_TOOL_DEFINITIONS.write as PiToolDefinition),
+	],
+});
 
 interface RunResult {
 	readonly stdout: string;

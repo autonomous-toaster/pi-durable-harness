@@ -30,8 +30,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 		settingsManager,
 		noExtensions: true,
 	});
-	await loader.reload();
+	await loader.reload({ resolveProjectTrust: async () => settingsManager.isProjectTrusted() });
 	const resources: PromptResources = {
+		cwd: config.cwd,
 		agentsFiles: loader.getAgentsFiles().agentsFiles,
 		skills: loader.getSkills().skills,
 		systemPrompt: loader.getSystemPrompt(),
@@ -40,7 +41,15 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 	const mcp = await loadMcpTools(config.agentDir, config.cwd);
 	const extraExtensions = mcp.tools.length === 0 ? [] : [{ name: "harness.mcp", tools: mcp.tools }];
-	const engine = await HarnessEngine.open({ config, key, modelRuntime, settingsManager, resources, extraExtensions });
+	const engine = await HarnessEngine.open({
+		config,
+		key,
+		modelRuntime,
+		settingsManager,
+		resources,
+		extraExtensions,
+		mcp: { entries: mcp.entries, settings: mcp.settings },
+	});
 	const session = new HarnessSession(engine, key);
 	const server = new RpcServer(session, process.stdin, process.stdout);
 	try {

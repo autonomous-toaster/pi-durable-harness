@@ -26,6 +26,7 @@
 		"build:bundle": "node scripts/build-bundle.mjs",
 		"typecheck": "tsc -p tsconfig.json --noEmit",
 		"test": "node --test",
+		"differential": "node tools/differential-mcp.mjs",
 		"check": "node scripts/check.mjs"
 	},
 	"dependencies": {
