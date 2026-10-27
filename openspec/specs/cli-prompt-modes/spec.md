@@ -113,6 +113,11 @@ T1.2 SHALL ALWAYS prepend piped stdin to the first prompt.
 - **WHEN** T1.2 runs
 - **THEN** T1.2 SHALL prepend piped stdin to the first prompt
 
+#### Scenario: A degraded extension is reported at startup
+
+- **WHEN** T3.6 runs before an RPC or one-shot run
+- **THEN** T3.6 SHALL write the degraded-extension diagnostic to stderr
+
 ### Requirement: A file reference resolves into the first prompt
 
 T1.3 SHALL ALWAYS resolve an @path reference into the first prompt.
@@ -184,3 +189,21 @@ T2.5 SHALL ALWAYS reject a positional prompt in RPC mode.
 
 - **WHEN** T2.5 runs
 - **THEN** T2.5 SHALL reject a positional prompt in RPC mode
+
+### Requirement: Extension translation precedes startup
+
+T3.7 SHALL complete BEFORE T1.2 SHALL run.
+
+#### Scenario: Startup follows extension translation
+
+- **WHEN** T3.7 completes
+- **THEN** T1.2 SHALL run
+
+### Requirement: Startup reports a degraded extension
+
+T1.2 SHALL ALWAYS write each degraded-extension diagnostic to stderr at startup.
+
+#### Scenario: Startup reports a degraded extension
+
+- **WHEN** T1.2 runs
+- **THEN** T1.2 SHALL write each degraded-extension diagnostic to stderr at startup
