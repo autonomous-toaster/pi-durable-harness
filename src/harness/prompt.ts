@@ -5,7 +5,7 @@
  */
 import type { PromptInput, ToolRegistration } from "@earendil-works/pi-durable";
 import { defineExtension, section } from "@earendil-works/pi-durable";
-import type { Skill } from "@earendil-works/pi-coding-agent";
+import type { PromptTemplate, Skill } from "@earendil-works/pi-coding-agent";
 import { serverReaches, type ResolvedServer } from "../tools/exposure.js";
 import { CODEMODE_CONTRIBUTION, PI_TOOL_DEFINITIONS, TOOL_SEARCH_CONTRIBUTION } from "../tools/pi-definitions.js";
 import { buildSystemPromptSections, type SystemPromptSections } from "./system-prompt.js";
@@ -14,6 +14,7 @@ export interface PromptResources {
 	readonly cwd: string;
 	readonly agentsFiles: readonly { readonly path: string; readonly content: string }[];
 	readonly skills: readonly Skill[];
+	readonly prompts: readonly PromptTemplate[];
 	readonly systemPrompt?: string | undefined;
 	readonly appendSystemPrompt: readonly string[];
 }

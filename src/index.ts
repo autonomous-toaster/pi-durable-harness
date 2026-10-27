@@ -8,6 +8,13 @@ import { resolveConfig } from "./harness/config.js";
 import { HarnessEngine } from "./harness/engine.js";
 import { runOneShot } from "./harness/oneshot.js";
 import type { PromptResources } from "./harness/prompt.js";
+import {
+	applyProviders,
+	classifyExtension,
+	extensionCommands,
+	reportDiagnostics,
+	translateExtension,
+} from "./extensions/host.js";
 import { RpcServer } from "./rpc/server.js";
 import { HarnessSession } from "./rpc/session.js";
 import { loadMcpTools } from "./tools/mcp.js";
@@ -42,19 +49,29 @@ export async function main(argv: readonly string[]): Promise<void> {
 		cwd: config.cwd,
 		agentDir: config.agentDir,
 		settingsManager,
-		noExtensions: true,
+		noExtensions: false,
 	});
 	await loader.reload({ resolveProjectTrust: async () => settingsManager.isProjectTrusted() });
 	const resources: PromptResources = {
 		cwd: config.cwd,
 		agentsFiles: loader.getAgentsFiles().agentsFiles,
 		skills: loader.getSkills().skills,
+		prompts: loader.getPrompts().prompts,
 		systemPrompt: loader.getSystemPrompt(),
 		appendSystemPrompt: loader.getAppendSystemPrompt(),
 	};
 
 	const mcp = await loadMcpTools(config.agentDir, config.cwd);
-	const extraExtensions = mcp.tools.length === 0 ? [] : [{ name: "harness.mcp", tools: mcp.tools }];
+
+	// pi extensions: translate what the loader recorded, report the rest (tasks 3.1-3.11).
+	const loaded = loader.getExtensions();
+	for (const failure of loaded.errors) process.stderr.write(`durable-rpc: extension ${failure.path} failed: ${failure.error}\n`);
+	const translated = loaded.extensions.map(translateExtension);
+	const diagnostics = loaded.extensions.flatMap((extension) => classifyExtension(extension).unsupported);
+	reportDiagnostics(diagnostics);
+	applyProviders(loaded.runtime.pendingProviderRegistrations, modelRuntime);
+
+	const extraExtensions = mcp.tools.length === 0 ? [...translated] : [{ name: "harness.mcp", tools: mcp.tools }, ...translated];
 	const engine = await HarnessEngine.open({
 		config,
 		key,
@@ -64,6 +81,24 @@ export async function main(argv: readonly string[]): Promise<void> {
 		extraExtensions,
 		mcp: { entries: mcp.entries, settings: mcp.settings },
 	});
+
+	// Register extension commands and session-lifecycle handlers on the opened engine (tasks 3.9-3.11).
+	for (const extension of loaded.extensions) {
+		for (const [name, command] of extensionCommands(extension)) {
+			engine.registerCommand(
+				{ name, description: command.description ?? "", source: "extension", sourceInfo: command.sourceInfo },
+				(args) => command.handler(args, {} as never),
+			);
+		}
+		engine.installSessionHandlers(
+			(["session_before_switch", "session_before_fork", "session_before_tree"] as const).flatMap(
+				(event) =>
+					(extension.handlers.get(event) ?? []).map(
+						(handler) => (sessionEvent) => handler(sessionEvent as never, {} as never),
+					),
+			),
+		);
+	}
 	const session = new HarnessSession(engine, key);
 	try {
 		if (config.interfaceName !== "rpc") {

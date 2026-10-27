@@ -13,6 +13,7 @@ import { EventProjector } from "../harness/events.js";
 import type { HarnessEngine } from "../harness/engine.js";
 import { toUserContent } from "../harness/input.js";
 import { projectEntries } from "../harness/projection.js";
+import { expandSkillCommand, skillCommands } from "../harness/skills.js";
 
 const CONTEXT = BACKGROUND_CONTEXT;
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -66,7 +67,10 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async submit(message: string, images: readonly unknown[] | undefined, behavior: "steer" | "followUp" | undefined) {
-		const submission = await this.#engine.submit(toUserContent(message, images), behavior);
+		// An extension command is resolved before any model work, as pi does (task 3.10).
+		if (await this.#engine.runCommand(message)) return { disposition: "handled" };
+		const expanded = expandSkillCommand(message, this.#engine.skills);
+		const submission = await this.#engine.submit(toUserContent(expanded, images), behavior);
 		const record = await submission.status(CONTEXT).catch(() => undefined);
 		return { disposition: record?.status === "queued" ? "queued" : "started" };
 	}
@@ -187,6 +191,7 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async newSession(parentSession: string | undefined): Promise<{ canceled: boolean }> {
+		if (await this.#engine.sessionVeto({ type: "session_before_switch", reason: "new" })) return { canceled: true };
 		const conversation = await this.#engine.newConversation();
 		await this.#engine.switchTo(String(conversation.id));
 		void parentSession;
@@ -194,12 +199,24 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async switchSession(sessionPath: string): Promise<{ canceled: boolean }> {
+		if (
+			await this.#engine.sessionVeto({
+				type: "session_before_switch",
+				reason: "resume",
+				targetSessionFile: sessionPath,
+			})
+		) {
+			return { canceled: true };
+		}
 		const switched = await this.#engine.switchTo(sessionPath);
 		if (!switched) throw new Error(`Unknown session: ${sessionPath}`);
 		return { canceled: false };
 	}
 
 	async fork(entryId: string): Promise<{ text: string; canceled: boolean }> {
+		if (await this.#engine.sessionVeto({ type: "session_before_fork", entryId, position: "at" })) {
+			return { text: "", canceled: true };
+		}
 		const forked = await this.#engine.fork(entryId);
 		return { text: String(forked.conversationId), canceled: false };
 	}
@@ -208,9 +225,13 @@ export class HarnessSession implements RpcSession {
 		const records = await this.#engine.entries();
 		const last = records.at(-1);
 		if (last === undefined) {
+			if (await this.#engine.sessionVeto({ type: "session_before_switch", reason: "new" })) return { canceled: true };
 			const conversation = await this.#engine.newConversation();
 			await this.#engine.switchTo(String(conversation.id));
 			return { canceled: false };
+		}
+		if (await this.#engine.sessionVeto({ type: "session_before_fork", entryId: String(last.id), position: "at" })) {
+			return { canceled: true };
 		}
 		const forked = await this.#engine.fork(String(last.id));
 		await this.#engine.switchTo(String(forked.conversationId));
@@ -251,7 +272,7 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async getCommands(): Promise<{ commands: unknown[] }> {
-		return { commands: [] };
+		return { commands: [...this.#engine.commands()] };
 	}
 
 	async startEvents(sink: (record: unknown) => void): Promise<() => Promise<void>> {

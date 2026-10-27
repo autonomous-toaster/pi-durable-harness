@@ -27,6 +27,7 @@ import {
 	DefaultResourceLoader,
 	ModelRuntime,
 	SettingsManager,
+	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Pool } from "pg";
@@ -35,6 +36,16 @@ import { openPostgresStorage } from "../storage/postgres/storage.js";
 import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
+import { skillCommands, type RpcCommandInfo } from "./skills.js";
+
+/** A session-lifecycle event, as pi shapes it (task 3.11). */
+export type PiSessionEvent =
+	| { readonly type: "session_before_switch"; readonly reason: "new" | "resume"; readonly targetSessionFile?: string }
+	| { readonly type: "session_before_fork"; readonly entryId: string; readonly position: "before" | "at" }
+	| { readonly type: "session_before_tree"; readonly [key: string]: unknown };
+
+/** One `session_before_*` handler; a `{ cancel: true }` result vetoes the change. */
+export type PiSessionHandler = (event: PiSessionEvent) => unknown;
 import { FileTools, CodemodeTools, PiCodingTools, platformShellTools } from "../tools/index.js";
 import { configureCodemodeDescription } from "../tools/codemode.js";
 import { type McpSettings } from "../tools/exposure.js";
@@ -121,6 +132,13 @@ export class HarnessEngine {
 	readonly #settingsManager: SettingsManager;
 	readonly #modelRuntime: ModelRuntime;
 	readonly #closeStorage: () => Promise<void>;
+	readonly #resources: PromptResources;
+	/** Extension commands, registered by the extension host (task 3.9). */
+	readonly #extensionCommands: RpcCommandInfo[] = [];
+	/** Extension command handlers, keyed by command name (task 3.10). */
+	readonly #commandHandlers = new Map<string, (args: string) => unknown>();
+	/** Session-lifecycle handlers consulted before a session change (task 3.11). */
+	readonly #sessionHandlers: PiSessionHandler[] = [];
 	#conversation: Conversation;
 
 	private constructor(options: {
@@ -128,12 +146,14 @@ export class HarnessEngine {
 		conversation: Conversation;
 		settingsManager: SettingsManager;
 		modelRuntime: ModelRuntime;
+		resources: PromptResources;
 		closeStorage: () => Promise<void>;
 	}) {
 		this.#harness = options.harness;
 		this.#conversation = options.conversation;
 		this.#settingsManager = options.settingsManager;
 		this.#modelRuntime = options.modelRuntime;
+		this.#resources = options.resources;
 		this.#closeStorage = options.closeStorage;
 	}
 
@@ -204,6 +224,7 @@ export class HarnessEngine {
 				conversation,
 				settingsManager,
 				modelRuntime,
+				resources,
 				closeStorage: opened.close,
 			});
 		} catch (error) {
@@ -228,8 +249,69 @@ export class HarnessEngine {
 		return this.#settingsManager;
 	}
 
+	/** The skills loaded once at startup, for command listing and expansion (tasks 2.1-2.4). */
+	get skills(): readonly Skill[] {
+		return this.#resources.skills;
+	}
+
+	/** Register an extension command so `get_commands` and prompt resolution see it (task 3.9). */
+	registerCommand(command: RpcCommandInfo, handler: (args: string) => unknown): void {
+		this.#extensionCommands.push(command);
+		this.#commandHandlers.set(command.name, handler);
+	}
+
+	/**
+	 * Resolve a `/name args` message against the extension commands and run its
+	 * handler (task 3.10). Returns `true` when a command handled the message, so
+	 * the caller reports `handled` and starts no model run.
+	 */
+	async runCommand(message: string): Promise<boolean> {
+		if (!message.startsWith("/")) return false;
+		const space = message.indexOf(" ");
+		const name = space === -1 ? message.slice(1) : message.slice(1, space);
+		const handler = this.#commandHandlers.get(name);
+		if (handler === undefined) return false;
+		await handler(space === -1 ? "" : message.slice(space + 1).trim());
+		return true;
+	}
+
+	/**
+	 * The `get_commands` payload in pi's order: extension commands, prompt
+	 * templates, then skills (tasks 2.1, 2.2, 3.9).
+	 */
+	commands(): readonly RpcCommandInfo[] {
+		return [
+			...this.#extensionCommands,
+			...this.#resources.prompts.map((prompt) => ({
+				name: prompt.name,
+				description: prompt.description,
+				source: "prompt" as const,
+				sourceInfo: prompt.sourceInfo,
+			})),
+			...skillCommands(this.#resources.skills),
+		];
+	}
+
 	messages(): Promise<readonly unknown[]> {
 		return this.#conversation.context(CONTEXT).then((view) => view.messages);
+	}
+
+	/**
+	 * Ask the session-lifecycle handlers whether a session change may proceed
+	 * (task 3.11). The consult runs before the change captures state, so a veto
+	 * leaves the session unchanged. The first `cancel` wins, as in pi.
+	 */
+	async sessionVeto(event: PiSessionEvent): Promise<boolean> {
+		for (const handler of this.#sessionHandlers) {
+			const result = (await handler(event)) as { readonly cancel?: boolean } | undefined;
+			if (result?.cancel === true) return true;
+		}
+		return false;
+	}
+
+	/** Install the session-lifecycle handlers found on the loaded extensions (task 3.11). */
+	installSessionHandlers(handlers: readonly PiSessionHandler[]): void {
+		this.#sessionHandlers.push(...handlers);
 	}
 
 	currentModel(): ModelRef | undefined {
@@ -313,6 +395,7 @@ export class HarnessEngine {
 			conversation,
 			settingsManager: this.#settingsManager,
 			modelRuntime: this.#modelRuntime,
+			resources: this.#resources,
 			closeStorage: async () => {},
 		});
 	}
