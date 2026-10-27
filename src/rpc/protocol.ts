@@ -2,7 +2,7 @@
  * The RPC session contract the server dispatches to (tasks 3.2, 3.3). The
  * durable engine implements it; tests can supply a stub. Methods return the
  * `data` payload pi puts in the response, with the shapes captured from the
- * pinned pi 1.1.0 (see test/fixtures).
+ * pinned pi 1.4.0 (see test/fixtures).
  */
 export interface RpcSession {
 	readonly sessionId: string;

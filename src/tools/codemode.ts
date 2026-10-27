@@ -22,7 +22,7 @@ import {
 } from "../harness/pi-internals.js";
 
 function textOf(result: ToolExecutionResult): string {
-	return (result.content ?? [])
+	return (result.output ?? [])
 		.map((block) => (block.type === "text" ? block.text : ""))
 		.join("");
 }
@@ -31,9 +31,9 @@ function render(result: CodemodeResult): ToolExecutionResult {
 	if (result.ok) {
 		const value = result.value === undefined ? result.output : result.value;
 		const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-		return { content: [{ type: "text", text }] };
+		return { output: [{ type: "text", text }] };
 	}
-	return { content: [{ type: "text", text: result.error.message }], isError: true };
+	return { output: [{ type: "text", text: result.error.message }], isError: true };
 }
 
 /** pi's composed codemode description from the callable tools (task 5.6). */

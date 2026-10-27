@@ -11,7 +11,7 @@ function registration(name, text = "ok") {
 	return {
 		name,
 		description: `does ${name}`,
-		execute: async () => ({ content: [{ type: "text", text }] }),
+		execute: async () => ({ output: [{ type: "text", text }] }),
 	};
 }
 
@@ -43,7 +43,7 @@ test("codemode exposes callable tools and withholds hidden and model-only ones",
 	const tools = [registration("mcp__s__t"), registration("mcp__s__h"), registration("mcp__s__m")];
 	const hit = await codemodeTool.execute({ code: "return await tools.mcp__s__t({});" }, apiWith(tools), context);
 	assert.notEqual(hit.isError, true);
-	assert.equal(hit.content[0].text, "ok");
+	assert.equal(hit.output[0].text, "ok");
 
 	const miss = await codemodeTool.execute({ code: "return await tools.mcp__s__h({});" }, apiWith(tools), context);
 	assert.equal(miss.isError, true);

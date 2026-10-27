@@ -2,7 +2,7 @@
  * The pi-RPC JSONL server: reads commands, dispatches them, correlates
  * responses by id, and streams session events (tasks 3.2, 3.3, 3.5, 3.4).
  *
- * Record handling matches the pinned pi 1.1.0 (see test/fixtures): malformed
+ * Record handling matches the pinned pi 1.4.0 (see test/fixtures): malformed
  * JSON is answered with a `success: false` response that carries no `command`
  * and no `id`; an unknown command is answered by name; `extension_ui_response`
  * is ignored without ending the process.
