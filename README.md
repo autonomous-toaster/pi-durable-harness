@@ -8,13 +8,14 @@ client  ──JSONL──►  harness (this repo)  ──►  Pi Durable Harness
                                                              Memory │ SQLite │ PostgreSQL
 ```
 
-Design and requirements live in the archived OpenSpec change [`2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/); main specs are under [`openspec/specs/`](openspec/specs/).
+Design and requirements live in the archived OpenSpec changes: [`2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness), [`2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/) (MCP exposure), and [`2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/) (pi 1.4.0 pin, skills, extensions); main specs are under [`openspec/specs/`](openspec/specs/).
 
 ---
 
 ## Requirements
 
 - **Node.js >= 22.19** (the floor shared by every `@earendil-works/*` package; durable's SQLite backend uses `node:sqlite`).
+- **pi `1.4.0`**, pinned exactly. The RPC wire surface and the golden fixtures in `test/fixtures/pi-1.4.0/` are captured from that release; parity claims apply to it.
 - Optional: a PostgreSQL server for the Postgres storage backend.
 
 ## Install and build
@@ -23,7 +24,7 @@ Design and requirements live in the archived OpenSpec change [`2026-10-08-durabl
 npm install          # exact-pinned dependencies
 npm run build        # tsc -> dist/  (the supported release artifact)
 npm run build:bundle # optional single-file ESM bundle -> dist/bundle/cli.js
-npm run check        # typecheck + build + tests (76 tests)
+npm run check        # typecheck + build + tests (95 tests, 27 PostgreSQL tests skipped by default)
 ```
 
 Run:
@@ -206,10 +207,12 @@ The harness reuses pi's own loaders, so **the standard pi configuration is read*
 
 Settings that the harness reads live at every use (steering/follow-up mode, compaction, retry, stream timeouts), so a settings edit applies from the next use without a restart.
 
-**Not loaded / not applied** (by design — extension packages are out of scope):
+**Extensions and skills:**
 
-- pi **extension packages** (`extensions:`, `packages:`, `-e`): the loader runs with `noExtensions: true`. Built-in `codemode`, `tool_search`, and MCP are provided instead by this repo's own adapters.
-- **Themes** and **prompt templates** are discovered but not used (the RPC surface has no terminal or editor to apply them to).
+- pi **extensions** (`extensions/`, `packages:`, `-e`) load through `DefaultResourceLoader` and are translated into durable tools and hooks. The hosted subset is `registerTool`, `context`/`context_with_system`, `tool_call`, `tool_result`, `session_before_compact`, `registerProvider`, `registerCommand`, and `session_before_fork`/`_switch`/`_tree`. Every other surface is reported by name on stderr at startup; nothing is silently dropped.
+- **Skills** are listed by `get_commands` as `skill:<name>` and expanded from `/skill:<name> <args>` before the model call, as pi does. A `disable-model-invocation` skill stays command-invocable and is hidden from model selection.
+- **Prompt templates** appear in `get_commands` with `source: "prompt"`.
+- **Themes** are discovered but not used (the RPC surface has no terminal to apply them to).
 
 Project resources are gated on trust: `AGENTS.md`, project skills, and other project resources load only when the project is trusted (`SettingsManager.isProjectTrusted()`), matching pi's order (trust, then project resources).
 
@@ -239,9 +242,9 @@ All of pi's RPC commands are accepted:
 | Compaction / retry | `compact`, `set_auto_compaction`, `set_auto_retry`, `abort_retry` |
 | Bash | `bash`, `abort_bash` |
 | Sessions | `new_session`, `switch_session`, `fork`, `clone`, `get_fork_messages`, `set_session_name`, `export_html` |
-| Discovery | `get_commands` |
+| Discovery | `get_commands` (extension commands, prompt templates, skills) |
 
-Behavior matched to **pinned pi 1.1.0** (`test/fixtures/pi-1.1.0/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; `extension_ui_response` is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
+Behavior matched to **pinned pi 1.4.0** (`test/fixtures/pi-1.4.0/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; `extension_ui_response` is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
 
 Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `assistantMessageEvent` per change), `message_end`, `tool_execution_start/update/end`, `turn_end`, `agent_end`, `queue_update`, `compaction_start/end`, `auto_retry_start/end`, `entry_appended`, `thinking_level_changed`, `bash_execution_update`, and `agent_settled` (synthesized when the session is quiescent). The internal durable `snapshot` is never forwarded; a fresh client primes from `get_state`/`get_messages`.
 
@@ -262,6 +265,7 @@ Tool definitions use **pi's exact descriptions and parameter schemas** (executio
 | `tool_search` | searches tools that are not declared yet | only when activated |
 | `mcp__<server>__<tool>` | `@earendil-works/pi-mcp`, per `mcp.json` | per exposure (below) |
 | `read_mcp_resource` | MCP resources | per exposure |
+| extension tools | pi extensions' `registerTool`, translated to durable tools (`src/extensions/`) | yes, when the extension is loaded |
 
 `codemode` and `tool_search` are activated automatically when a configured MCP server needs them (see below), or forced with the `defaultTools` setting (`["+codemode", "+tool_search"]`).
 
@@ -288,8 +292,8 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 
 ## Limitations
 
-- **Extension UI** (`extension_ui_request/response`) is not implemented; inbound `extension_ui_response` records are ignored.
-- **Third-party pi extension packages** are not loaded.
+- **Extension UI** (`extension_ui_request/response`) is not implemented; inbound `extension_ui_response` records are ignored, and `ctx.ui.*` calls in a hosted extension are inert.
+- **Extension surfaces outside the hosted subset** are reported on stderr and not applied: observation-only events (`agent_start`, `turn_start`, `message_*`, `session_start`, `model_select`, ...), renderer registrations, flags, shortcuts, `before_provider_request`, and `after_provider_response`.
 - The `read` tool cannot read image files; image *input* in prompts is supported (mapped to content blocks).
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
 - **Single-executable (Node SEA) binary** is not shipped: it would require embedding the QuickJS wasm asset and postject injection. The supported artifacts are the ESM package and the JS bundle.
@@ -327,10 +331,13 @@ src/
     system-prompt.ts         port of pi's system-prompt section builder
     pi-internals.ts          access to pi's codemode description composer
     prompt.ts                pi prompt sections (system, AGENTS.md, skills, cwd, mcp_servers)
+    skills.ts                skills as RPC commands, /skill:<name> expansion
     engine.ts                durable Harness over SQLite/Postgres/ephemeral
     events.ts                durable watchEvents -> pi event projection
     projection.ts            S1 transcript projection, control/policy entries, HTML export
     input.ts                 image content -> durable content blocks
+  extensions/
+    host.ts                  pi extension -> durable tools/hooks, capability classifier, diagnostics
   rpc/
     framing.ts               LF-only JSONL reader/writer
     protocol.ts              RpcSession contract + response shapes
@@ -362,3 +369,4 @@ scripts/                     check.mjs, build-bundle.mjs
 - Session format: <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md>
 - This change: [`openspec/changes/archive/2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness)
 - MCP exposure parity: [`openspec/changes/archive/2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/)
+- pi 1.4.0 pin, skills, and extensions: [`openspec/changes/archive/2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/)
