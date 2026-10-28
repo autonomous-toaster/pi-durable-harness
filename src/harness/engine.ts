@@ -133,6 +133,8 @@ export class HarnessEngine {
 	readonly #modelRuntime: ModelRuntime;
 	readonly #closeStorage: () => Promise<void>;
 	readonly #resources: PromptResources;
+	/** The tools the conversation declares, captured at open (extension action reads). */
+	#declaredTools: readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown }[] = [];
 	/** Extension commands, registered by the extension host (task 3.9). */
 	readonly #extensionCommands: RpcCommandInfo[] = [];
 	/** Extension command handlers, keyed by command name (task 3.10). */
@@ -219,7 +221,7 @@ export class HarnessEngine {
 			const agent = initialAgent(config, settingsManager, modelRuntime);
 			const conversation = await harness.root(CONTEXT, { agent: { ...agent, tools: declared } });
 			harness.resume();
-			return new HarnessEngine({
+			const opened2 = new HarnessEngine({
 				harness,
 				conversation,
 				settingsManager,
@@ -227,6 +229,12 @@ export class HarnessEngine {
 				resources,
 				closeStorage: opened.close,
 			});
+			opened2.#declaredTools = declared.map((tool) => ({
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters,
+			}));
+			return opened2;
 		} catch (error) {
 			await opened.close().catch(() => {});
 			throw error;
@@ -252,6 +260,21 @@ export class HarnessEngine {
 	/** The skills loaded once at startup, for command listing and expansion (tasks 2.1-2.4). */
 	get skills(): readonly Skill[] {
 		return this.#resources.skills;
+	}
+
+	/** The tool names the conversation declares, for `pi.getActiveTools()`. */
+	declaredToolNames(): string[] {
+		return this.#declaredTools.map((tool) => tool.name);
+	}
+
+	/** Every installed tool, for `pi.getAllTools()`. */
+	allTools(): readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown }[] {
+		return this.#declaredTools;
+	}
+
+	/** The current thinking level, for `pi.getThinkingLevel()`. */
+	currentThinkingLevel(): string | undefined {
+		return undefined;
 	}
 
 	/** Register an extension command so `get_commands` and prompt resolution see it (task 3.9). */

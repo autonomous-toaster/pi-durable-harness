@@ -24,7 +24,7 @@ Design and requirements live in the archived OpenSpec changes: [`2026-10-08-dura
 npm install          # exact-pinned dependencies
 npm run build        # tsc -> dist/  (the supported release artifact)
 npm run build:bundle # optional single-file ESM bundle -> dist/bundle/cli.js
-npm run check        # typecheck + build + tests (95 tests, 27 PostgreSQL tests skipped by default)
+npm run check        # typecheck + build + tests (99 tests, 27 PostgreSQL tests skipped by default)
 ```
 
 Run:
@@ -209,7 +209,13 @@ Settings that the harness reads live at every use (steering/follow-up mode, comp
 
 **Extensions and skills:**
 
-- pi **extensions** (`extensions/`, `packages:`, `-e`) load through `DefaultResourceLoader` and are translated into durable tools and hooks. The hosted subset is `registerTool`, `context`/`context_with_system`, `tool_call`, `tool_result`, `session_before_compact`, `registerProvider`, `registerCommand`, and `session_before_fork`/`_switch`/`_tree`. Every other surface is reported by name on stderr at startup; nothing is silently dropped.
+- pi **extensions** (`extensions/`, `packages:`, `-e`) load through `DefaultResourceLoader`; the harness reads what the loader recorded and applies it.
+  - **Translated to durable**: `registerTool` → tools, `context`/`context_with_system` → a `beforeRequest` message hook, `tool_call`/`tool_result` → tool hooks, `session_before_compact` → a compaction hook.
+  - **Dispatched from the session stream**: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start/update/end`, `agent_before_settle`, `agent_settled`, `session_start`, `session_shutdown`, `session_compact`.
+  - **Dispatched from the RPC commands**: `model_select`, `thinking_level_select`, `session_info_changed`, `session_tree`, `user_bash`, `input`, and the `session_before_switch/fork/tree` vetoes.
+  - **Also applied**: `registerProvider` → the model runtime, `registerCommand` → the command registry, `registerFlag` → the process arguments, `resources_discover` → extra skill and template paths.
+  - **Accepted with no effect, as in pi's own RPC mode**: entry/message/tool renderers, markdown transformers, shortcuts, and `ui_prompt_*` — they need a terminal.
+  - **Reported on stderr**: only the surfaces with no seam — `project_trust`, `mcp_servers_change`, `cache_warming_decision`, `before_provider_request`, `before_provider_headers`, `after_provider_response`, and `provider_stream_event`. A handler result the harness cannot apply (such as `before_agent_start`'s `systemPrompt`) is reported too, never dropped silently.
 - **Skills** are listed by `get_commands` as `skill:<name>` and expanded from `/skill:<name> <args>` before the model call, as pi does. A `disable-model-invocation` skill stays command-invocable and is hidden from model selection.
 - **Prompt templates** appear in `get_commands` with `source: "prompt"`.
 - **Themes** are discovered but not used (the RPC surface has no terminal to apply them to).
@@ -293,7 +299,7 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 ## Limitations
 
 - **Extension UI** (`extension_ui_request/response`) is not implemented; inbound `extension_ui_response` records are ignored, and `ctx.ui.*` calls in a hosted extension are inert.
-- **Extension surfaces outside the hosted subset** are reported on stderr and not applied: observation-only events (`agent_start`, `turn_start`, `message_*`, `session_start`, `model_select`, ...), renderer registrations, flags, shortcuts, `before_provider_request`, and `after_provider_response`.
+- **Provider-level extension hooks** are reported rather than applied: `before_provider_request`, `before_provider_headers`, `after_provider_response`, and `provider_stream_event`, because durable exposes the message list and the parsed message, not the provider payload or headers. `before_agent_start`'s `systemPrompt` and `message` results are reported the same way.
 - The `read` tool cannot read image files; image *input* in prompts is supported (mapped to content blocks).
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
 - **Single-executable (Node SEA) binary** is not shipped: it would require embedding the QuickJS wasm asset and postject injection. The supported artifacts are the ESM package and the JS bundle.
@@ -338,6 +344,8 @@ src/
     input.ts                 image content -> durable content blocks
   extensions/
     host.ts                  pi extension -> durable tools/hooks, capability classifier, diagnostics
+    events.ts                event dispatch to extension handlers, serialized
+    actions.ts               durable-backed pi.* action surface + ctx.sessionManager
   rpc/
     framing.ts               LF-only JSONL reader/writer
     protocol.ts              RpcSession contract + response shapes

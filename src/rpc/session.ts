@@ -14,6 +14,7 @@ import type { HarnessEngine } from "../harness/engine.js";
 import { toUserContent } from "../harness/input.js";
 import { projectEntries } from "../harness/projection.js";
 import { expandSkillCommand, skillCommands } from "../harness/skills.js";
+import type { ExtensionEventBus } from "../extensions/events.js";
 
 const CONTEXT = BACKGROUND_CONTEXT;
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -35,11 +36,13 @@ export function shellEnvironment(
 export class HarnessSession implements RpcSession {
 	readonly #engine: HarnessEngine;
 	readonly #key: string;
+	readonly #bus: ExtensionEventBus | undefined;
 	#bashAbort: (() => void) | undefined;
 
-	constructor(engine: HarnessEngine, key: string) {
+	constructor(engine: HarnessEngine, key: string, bus?: ExtensionEventBus) {
 		this.#engine = engine;
 		this.#key = key;
+		this.#bus = bus;
 	}
 
 	get sessionId(): string {
@@ -67,9 +70,20 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async submit(message: string, images: readonly unknown[] | undefined, behavior: "steer" | "followUp" | undefined) {
+		// `input` handlers may replace the text before anything else runs.
+		let text = message;
+		for (const result of await this.#bus?.dispatchCollect("input", {
+			type: "input",
+			text,
+			images,
+			source: behavior === undefined ? "user" : "queue",
+		}) ?? []) {
+			const next = (result as { readonly text?: unknown } | undefined)?.text;
+			if (typeof next === "string") text = next;
+		}
 		// An extension command is resolved before any model work, as pi does (task 3.10).
-		if (await this.#engine.runCommand(message)) return { disposition: "handled" };
-		const expanded = expandSkillCommand(message, this.#engine.skills);
+		if (await this.#engine.runCommand(text)) return { disposition: "handled" };
+		const expanded = expandSkillCommand(text, this.#engine.skills);
 		const submission = await this.#engine.submit(toUserContent(expanded, images), behavior);
 		const record = await submission.status(CONTEXT).catch(() => undefined);
 		return { disposition: record?.status === "queued" ? "queued" : "started" };
@@ -152,6 +166,7 @@ export class HarnessSession implements RpcSession {
 		if (model === undefined) return { ok: false, error: `Model not found: ${provider}/${modelId}` };
 		await this.#engine.appendControl({ type: "model_change", provider, modelId });
 		await this.#engine.configure({ model: { provider, modelId } });
+		this.#bus?.dispatch("model_select", { type: "model_select", provider, modelId, source: "set" });
 		return { ok: true };
 	}
 
@@ -169,6 +184,7 @@ export class HarnessSession implements RpcSession {
 		if (!THINKING.includes(level as (typeof THINKING)[number])) throw new Error(`Unknown thinking level: ${level}`);
 		await this.#engine.appendControl({ type: "thinking_level_change", level });
 		await this.#engine.configure({ thinkingLevel: level as (typeof THINKING)[number] });
+		this.#bus?.dispatch("thinking_level_select", { type: "thinking_level_select", level, source: "set" });
 	}
 
 	async cycleThinkingLevel(): Promise<{ level: string }> {
@@ -195,6 +211,7 @@ export class HarnessSession implements RpcSession {
 		const conversation = await this.#engine.newConversation();
 		await this.#engine.switchTo(String(conversation.id));
 		void parentSession;
+		this.#bus?.dispatch("session_tree", { type: "session_tree", reason: "new" });
 		return { canceled: false };
 	}
 
@@ -210,6 +227,7 @@ export class HarnessSession implements RpcSession {
 		}
 		const switched = await this.#engine.switchTo(sessionPath);
 		if (!switched) throw new Error(`Unknown session: ${sessionPath}`);
+		this.#bus?.dispatch("session_tree", { type: "session_tree", reason: "switch" });
 		return { canceled: false };
 	}
 
@@ -218,6 +236,7 @@ export class HarnessSession implements RpcSession {
 			return { text: "", canceled: true };
 		}
 		const forked = await this.#engine.fork(entryId);
+		this.#bus?.dispatch("session_tree", { type: "session_tree", reason: "fork" });
 		return { text: String(forked.conversationId), canceled: false };
 	}
 
@@ -235,6 +254,7 @@ export class HarnessSession implements RpcSession {
 		}
 		const forked = await this.#engine.fork(String(last.id));
 		await this.#engine.switchTo(String(forked.conversationId));
+		this.#bus?.dispatch("session_tree", { type: "session_tree", reason: "clone" });
 		return { canceled: false };
 	}
 
@@ -244,10 +264,12 @@ export class HarnessSession implements RpcSession {
 
 	async setSessionName(name: string): Promise<void> {
 		await this.#engine.appendControl({ type: "session_info", name });
+		this.#bus?.dispatch("session_info_changed", { type: "session_info_changed", name });
 	}
 
 	async bash(command: string, onOutput: (delta: string) => void): Promise<{ output: string; exitCode: number }> {
 		const agent = await this.#engine.resolvedAgent();
+		this.#bus?.dispatch("user_bash", { type: "user_bash", command, excludeFromContext: false });
 		return new Promise((resolve, reject) => {
 			const child = spawn(command, { shell: true, env: { ...process.env, ...shellEnvironment(agent, this.sessionId) } });
 			let output = "";
@@ -277,10 +299,29 @@ export class HarnessSession implements RpcSession {
 
 	async startEvents(sink: (record: unknown) => void): Promise<() => Promise<void>> {
 		const stream = await this.#engine.watchEvents();
-		const projector = new EventProjector(sink, () => this.#engine.isQuiescent());
+		const projector = new EventProjector(dispatchTo(this.#bus, sink), () => this.#engine.isQuiescent());
+		this.#bus?.dispatch("session_start", { type: "session_start", sessionId: this.sessionId });
 		stream.start(async (events) => projector.handle(events));
 		return async () => {
 			await stream.stop();
 		};
 	}
+}
+
+/**
+ * Forward each projected pi record to the extensions and to the client
+ * (tasks: event dispatch). `agent_before_settle` has no record of its own, so it
+ * is dispatched immediately before the synthesized `agent_settled`.
+ */
+function dispatchTo(bus: ExtensionEventBus | undefined, sink: (record: unknown) => void): (record: unknown) => void {
+	if (bus === undefined) return sink;
+	return (record) => {
+		const type = (record as { type?: string }).type;
+		if (type === "compaction_end") bus.dispatch("session_compact", record);
+		else if (type === "agent_settled") {
+			bus.dispatch("agent_before_settle", { type: "agent_before_settle" });
+			bus.dispatch("agent_settled", record);
+		} else if (type !== undefined) bus.dispatch(type, record);
+		sink(record);
+	};
 }

@@ -48,6 +48,7 @@ export default function (pi) {
 	});
 	pi.on("session_before_fork", async () => ({ cancel: true }));
 	pi.on("model_select", async () => {});
+	pi.on("before_provider_headers", async () => {});
 }
 `;
 
@@ -89,14 +90,16 @@ test("tool_call becomes a beforeTool hook that can block (task 3.4)", async () =
 	assert.deepEqual(result, { block: "blocked by fixture" });
 });
 
-test("a UI surface is classified unsupported and a command is hosted (task 3.5)", async () => {
+test("a hosted event is not reported while an unhosted one is (task 3.5)", async () => {
 	const loaded = await loadExtension(COMMAND_EXTENSION);
 	const classification = classifyExtension(loaded.extensions[0]);
 	assert.ok(classification.hosted.includes("registerCommand"));
 	assert.ok(classification.hosted.includes("session_before_fork"));
-	assert.ok(
-		classification.unsupported.some((entry) => entry.surface === "model_select"),
-		"an unhosted event is reported",
+	assert.ok(classification.hosted.includes("model_select"), "dispatched events are hosted");
+	assert.deepEqual(
+		classification.unsupported.map((entry) => entry.surface),
+		["before_provider_headers"],
+		"only the surface with no seam is reported",
 	);
 });
 
@@ -107,7 +110,7 @@ test("an unsupported surface is reported on stderr and the run continues (task 3
 	reportDiagnostics(diagnostics, (text) => lines.push(text));
 	assert.equal(lines.length, diagnostics.length);
 	for (const line of lines) assert.match(line, /^durable-rpc: extension .* unhosted surface: /);
-	assert.match(lines[0], /model_select/);
+	assert.match(lines[0], /before_provider_headers/);
 	assert.equal(formatDiagnostic({ extension: "p", surface: "s" }), "durable-rpc: extension p uses an unhosted surface: s");
 });
 
@@ -231,4 +234,101 @@ export default function (pi) {
 	const hook = (durable.hooks ?? []).find((entry) => entry.task === "pi.compaction");
 	assert.ok(hook !== undefined, "session_before_compact maps to the compaction task");
 	assert.deepEqual(await hook.handlers.beforeCompact({ reason: "manual" }, {}, {}), { decline: true });
+});
+
+test("session events reach extension handlers in order (event dispatch)", async () => {
+	const loaded = await loadExtension(`
+export default function (pi) {
+	const log = () => (globalThis.__evtLog = globalThis.__evtLog || []);
+	for (const name of ["session_start", "agent_start", "turn_start", "message_start", "tool_execution_start", "agent_settled", "session_shutdown"]) {
+		pi.on(name, async (event) => { log().push(event.type); });
+	}
+}
+`);
+	const { ExtensionEventBus } = await import("../dist/extensions/events.js");
+	const bus = new ExtensionEventBus(
+		loaded.extensions,
+		{ cwd: "/tmp", mode: "rpc", hasUI: true, ui: {} },
+		() => {},
+	);
+	globalThis.__evtLog = [];
+	for (const type of ["session_start", "agent_start", "turn_start", "message_start", "tool_execution_start", "agent_before_settle", "agent_settled", "session_shutdown"]) {
+		bus.dispatch(type, { type });
+	}
+	await bus.idle();
+	assert.deepEqual(globalThis.__evtLog, [
+		"session_start",
+		"agent_start",
+		"turn_start",
+		"message_start",
+		"tool_execution_start",
+		"agent_settled",
+		"session_shutdown",
+	]);
+});
+
+test("a throwing handler is reported and does not stop the run (event dispatch)", async () => {
+	const loaded = await loadExtension(`
+export default function (pi) {
+	pi.on("agent_start", async () => { throw new Error("boom"); });
+	pi.on("agent_start", async () => { globalThis.__afterThrow = true; });
+}
+`);
+	const { ExtensionEventBus } = await import("../dist/extensions/events.js");
+	const lines = [];
+	const bus = new ExtensionEventBus(loaded.extensions, { cwd: "/tmp", mode: "rpc", hasUI: true, ui: {} }, () => {});
+	const original = process.stderr.write.bind(process.stderr);
+	process.stderr.write = (chunk) => {
+		lines.push(String(chunk));
+		return true;
+	};
+	try {
+		globalThis.__afterThrow = false;
+		bus.dispatch("agent_start", { type: "agent_start" });
+		await bus.idle();
+	} finally {
+		process.stderr.write = original;
+	}
+	assert.equal(globalThis.__afterThrow, true, "the next handler still runs");
+	assert.match(lines.join(""), /failed on agent_start: boom/);
+});
+
+test("an input handler may replace the text before the model call (event dispatch)", async () => {
+	const loaded = await loadExtension(`
+export default function (pi) {
+	pi.on("input", async (event) => ({ text: event.text.toUpperCase() }));
+}
+`);
+	const { ExtensionEventBus } = await import("../dist/extensions/events.js");
+	const bus = new ExtensionEventBus(loaded.extensions, { cwd: "/tmp", mode: "rpc", hasUI: true, ui: {} }, () => {});
+	let submitted;
+	const engine = {
+		runCommand: async () => false,
+		skills: [],
+		submit: async (content) => {
+			submitted = content;
+			return { status: async () => ({ status: "done" }) };
+		},
+	};
+	const session = new HarnessSession(engine, "s", bus);
+	await session.submit("hello", undefined, undefined);
+	assert.equal(submitted, "HELLO");
+});
+
+test("an unapplied before_agent_start field is reported, not dropped (event dispatch)", async () => {
+	const loaded = await loadExtension(`
+export default function (pi) {
+	pi.on("before_agent_start", async () => ({ systemPrompt: "override" }));
+}
+`);
+	const { ExtensionEventBus } = await import("../dist/extensions/events.js");
+	const ignored = [];
+	const bus = new ExtensionEventBus(loaded.extensions, { cwd: "/tmp", mode: "rpc", hasUI: true, ui: {} }, (result) =>
+		ignored.push(result),
+	);
+	bus.dispatch("before_agent_start", { type: "before_agent_start" });
+	await bus.idle();
+	assert.deepEqual(ignored, [
+		{ extension: loaded.extensions[0].path, event: "before_agent_start", field: "systemPrompt" },
+	]);
 });

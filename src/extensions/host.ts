@@ -9,6 +9,7 @@
  * surfaces the harness does not host.
  */
 import type { Extension as PiExtension, ModelRuntime, ProviderConfig, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import { DISPATCHED_EVENTS, INERT_EVENTS } from "./events.js";
 import {
 	CompactionTask,
 	GenerationTask,
@@ -34,28 +35,37 @@ export interface CapabilityClassification {
 }
 
 /**
- * pi events the harness hosts. `context` and `context_with_system` edit the
- * message list, `tool_call`/`tool_result` wrap a call, and
- * `session_before_compact` can decline a summary; each has a durable hook of
- * the same reach. The session-lifecycle events are consulted by the harness.
+ * pi events the harness hosts through a durable hook. `context` and
+ * `context_with_system` edit the message list, `tool_call`/`tool_result` wrap a
+ * call, and `session_before_compact` can decline a summary.
  */
-const HOSTED_EVENTS = new Set([
-	"context",
-	"context_with_system",
-	"tool_call",
-	"tool_result",
-	"session_before_compact",
-	"session_before_fork",
-	"session_before_switch",
-	"session_before_tree",
+const HOOKED_EVENTS = new Set(["context", "context_with_system", "tool_call", "tool_result", "session_before_compact"]);
+
+/** Session-lifecycle events consulted by the harness before a change. */
+const VETO_EVENTS = new Set(["session_before_fork", "session_before_switch", "session_before_tree"]);
+
+/**
+ * Registrations pi resolves to nothing in RPC mode, because they need a
+ * terminal. pi accepts them there too and simply never uses them, so the
+ * harness accepts them without a diagnostic.
+ */
+const INERT_REGISTRATIONS: ReadonlySet<string> = new Set([
+	"registerEntryRenderer",
+	"registerMessageRenderer",
+	"registerMarkdownTransformer",
+	"registerToolRenderer",
+	"registerShortcut",
 ]);
 
 /**
  * Classify one extension: what it registered, and what cannot be hosted
- * (task 3.5). A provider registration is hosted through the model runtime, so
- * it is hosted; everything with no durable or harness counterpart is reported.
+ * (task 3.5). A surface is hosted when a durable hook, a dispatched event, or
+ * a harness seam applies it; it is unhosted only when none can.
  */
-export function classifyExtension(extension: PiExtension): CapabilityClassification {
+export function classifyExtension(
+	extension: PiExtension,
+	dispatched: ReadonlySet<string> = DISPATCHED_EVENTS,
+): CapabilityClassification {
 	const hosted: string[] = [];
 	const unsupported: SurfaceDiagnostic[] = [];
 	const report = (surface: string): void => {
@@ -65,15 +75,12 @@ export function classifyExtension(extension: PiExtension): CapabilityClassificat
 	if (extension.tools.size > 0) hosted.push("registerTool");
 	if (extension.commands.size > 0) hosted.push("registerCommand");
 	for (const event of extension.handlers.keys()) {
-		if (HOSTED_EVENTS.has(event)) hosted.push(event);
+		if (HOOKED_EVENTS.has(event) || VETO_EVENTS.has(event) || dispatched.has(event)) hosted.push(event);
+		else if (INERT_EVENTS.has(event)) continue;
 		else report(event);
 	}
-	if (extension.flags.size > 0) report("registerFlag");
-	if (extension.shortcuts.size > 0) report("registerShortcut");
-	if (extension.messageRenderers.size > 0) report("registerMessageRenderer");
-	if ((extension.toolRenderers?.length ?? 0) > 0) report("registerToolRenderer");
-	if (extension.entryRenderers !== undefined) report("registerEntryRenderer");
-	if (extension.markdownTransformer !== undefined) report("registerMarkdownTransformer");
+	if (extension.flags.size > 0) hosted.push("registerFlag");
+	if (extension.handlers.has("resources_discover")) hosted.push("resources_discover");
 	return { hosted, unsupported };
 }
 
@@ -93,7 +100,7 @@ export function reportDiagnostics(
 type PiHandler = (...args: never[]) => unknown;
 
 /** `ctx.ui` for an extension that expects pi's UI in RPC mode: every call is inert. */
-function inertUi(): Record<string, unknown> {
+export function inertUi(): Record<string, unknown> {
 	const noop = (): undefined => undefined;
 	return {
 		select: async () => undefined,
@@ -238,6 +245,38 @@ export function extensionCommands(extension: PiExtension): Map<string, Registere
 	return extension.commands;
 }
 
+/**
+ * Read an extension flag's value from the process arguments, as pi does
+ * (`--flag`, `--flag value`, `--flag=value`). Returns `undefined` when the
+ * flag is absent, so the registered default stands.
+ */
+export function flagValue(argv: readonly string[], name: string): boolean | string | undefined {
+	for (let index = 0; index < argv.length; index += 1) {
+		const argument = argv[index] ?? "";
+		if (argument === `--${name}`) {
+			const next = argv[index + 1];
+			if (next === undefined || next.startsWith("-")) return true;
+			return next;
+		}
+		if (argument.startsWith(`--${name}=`)) return argument.slice(name.length + 3);
+	}
+	return undefined;
+}
+
+/** Apply each registered extension flag from the arguments (task: extension flags). */
+export function applyFlags(
+	extensions: readonly PiExtension[],
+	argv: readonly string[],
+	values: Map<string, boolean | string>,
+): void {
+	for (const extension of extensions) {
+		for (const name of extension.flags.keys()) {
+			const value = flagValue(argv, name);
+			if (value !== undefined) values.set(name, value);
+		}
+	}
+}
+
 /** Flush pi's queued provider registrations into the harness model runtime (task 3.8). */
 export function applyProviders(
 	pending: readonly { readonly name: string; readonly config: unknown }[],
@@ -246,4 +285,39 @@ export function applyProviders(
 	for (const registration of pending) {
 		modelRuntime.registerProvider(registration.name, registration.config as ProviderConfig);
 	}
+}
+
+/** Paths an extension added through `resources_discover`. */
+export interface DiscoveredResources {
+	readonly skillPaths: readonly string[];
+	readonly promptPaths: readonly string[];
+}
+
+/**
+ * Ask each extension's `resources_discover` handlers for extra skill and
+ * template paths, in registration order. A handler that throws is reported and
+ * skipped, so discovery never blocks startup.
+ */
+export async function discoverResources(
+	extensions: readonly PiExtension[],
+	cwd: string,
+): Promise<DiscoveredResources> {
+	const skillPaths: string[] = [];
+	const promptPaths: string[] = [];
+	for (const extension of extensions) {
+		for (const handler of extension.handlers.get("resources_discover") ?? []) {
+			try {
+				const result = (await (handler as (event: unknown, ctx: unknown) => unknown)({ type: "resources_discover", cwd, reason: "startup" }, {})) as
+					| { readonly skillPaths?: readonly string[]; readonly promptPaths?: readonly string[] }
+					| undefined;
+				if (Array.isArray(result?.skillPaths)) skillPaths.push(...result.skillPaths);
+				if (Array.isArray(result?.promptPaths)) promptPaths.push(...result.promptPaths);
+			} catch (error) {
+				process.stderr.write(
+					`durable-rpc: extension ${extension.path} failed on resources_discover: ${error instanceof Error ? error.message : String(error)}\n`,
+				);
+			}
+		}
+	}
+	return { skillPaths, promptPaths };
 }
