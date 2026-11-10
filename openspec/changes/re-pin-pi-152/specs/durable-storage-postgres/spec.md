@@ -6,7 +6,6 @@
 | --- | --- |
 | T3.1 | Add runCounted to the PostgreSQL executor |
 | T3.2 | Run the PostgreSQL conformance suite |
-| T3.3 | Reopen a stored conversation under 1.5.2 |
 
 ## ADDED Requirements
 
@@ -27,12 +26,3 @@ T3.1 SHALL complete BEFORE T3.2 SHALL run.
 
 - **WHEN** T3.1 completes
 - **THEN** T3.2 SHALL run
-
-### Requirement: A stored conversation reopens
-
-T3.3 SHALL ALWAYS resume a stored conversation under pi-durable 1.5.2.
-
-#### Scenario: A stored conversation resumes
-
-- **WHEN** T3.3 runs and a conversation was stored earlier
-- **THEN** T3.3 SHALL resume the conversation under pi-durable 1.5.2

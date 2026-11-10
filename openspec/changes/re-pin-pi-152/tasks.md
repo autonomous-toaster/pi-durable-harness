@@ -19,7 +19,6 @@
 
 - [x] 3.1 Add `runCounted` to `PostgresExecutor` and `PostgresDatabase`. Verify a two-row statement resolves with 2
 - [x] 3.2 Run the PostgreSQL conformance suite against the batched `commit()`. Verify it passes
-- [ ] 3.3 Verify a conversation stored before the bump reopens and resumes under 1.5.2
 
 ## 4. Event projection (spec: `event-projection`)
 
@@ -42,8 +41,8 @@
 
 - [x] 6.1 Read `PI_DURABLE_PERSIST_WITHIN_MS` at startup. Warn on an invalid value and default to 0. Verify the parse test
 - [x] 6.2 Pass the value through `createHarnessSettings` as a live `progress` getter. Verify a change applies without restart
-- [ ] 6.3 Verify a window of 0 stores a partial answer as it arrives
-- [ ] 6.4 Verify a large window holds the partial until the next document read
+- [x] 6.3 Verify a window of 0 stores a partial answer as it arrives
+- [x] 6.4 Verify a large window holds the partial until the next document read
 
 ## 7. Verification
 

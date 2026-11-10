@@ -317,6 +317,10 @@ TEST_DATABASE_URL=postgres://user:pass@host/db \
 node tools/capture-fixtures.mjs                 # re-capture golden pi RPC fixtures
 PI_ACCEPT_PROMPT=1 node tools/acceptance.mjs    # drive the harness as an external client
 npm run differential                            # diff the model request against pi (mock model + MCP fixture)
+TEST_LIVE_MODEL=1 node --test test/progress-window.test.mjs
+                                                # opt-in live model: the progress window
+                                                # stores a partial at 0 and defers it when large
+                                                # (TEST_LIVE_PROVIDER / TEST_LIVE_MODEL_ID override the model)
 # test/event-fixture.test.mjs replays the pinned run against a mock model and
 # compares the projected records with test/fixtures/pi-1.5.2/events.ndjson
 ```
