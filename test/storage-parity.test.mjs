@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import pg from "pg";
 import { openPostgresStorage } from "../dist/storage/postgres/storage.js";
 
@@ -13,8 +14,9 @@ const context = BACKGROUND_CONTEXT;
 async function observe(storage) {
 	const root = ROOT_CONVERSATION_ID;
 	const entryId = await storage.mintId();
-	await storage.commit([{ type: "conversation", value: { id: root } }], context);
-	await storage.commit(
+	await commitWrites(storage, [{ type: "conversation", value: { id: root } }], context);
+	await commitWrites(
+		storage,
 		[
 			{
 				type: "entry",

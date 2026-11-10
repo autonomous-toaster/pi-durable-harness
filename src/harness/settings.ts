@@ -6,8 +6,12 @@
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 
-export function createHarnessSettings(settings: SettingsManager): HarnessSettings {
+export function createHarnessSettings(settings: SettingsManager, options: { readonly persistWithinMs?: number } = {}): HarnessSettings {
+	const persistWithinMs = options.persistWithinMs ?? 0;
 	return {
+		get progress() {
+			return { persistWithinMs };
+		},
 		get stream() {
 			const provider = settings.getProviderRetrySettings() as {
 				timeoutMs?: number;

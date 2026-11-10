@@ -5,7 +5,7 @@
  * table by the engine.
  */
 import { McpClient, StdioTransport, StreamableHttpTransport, type Tool as McpTool } from "@earendil-works/pi-mcp";
-import { Type } from "@earendil-works/pi-ai";
+import { obj, str } from "@earendil-works/pi-schema";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { loadMcpSettings, resolveToolExposure, type McpSettings, type ResolvedServer, type ToolExposure } from "./exposure.js";
 
@@ -60,7 +60,7 @@ export function createResourceTool(clients: ReadonlyMap<string, McpClient>): Too
 	return defineTool({
 		name: "read_mcp_resource",
 		description: "Read a resource from a connected MCP server.",
-		parameters: Type.Object({ server: Type.String(), uri: Type.String() }),
+		parameters: obj({ server: str(), uri: str() }),
 		execute: async (args) => {
 			const client = clients.get(args.server);
 			if (client === undefined) return { content: [{ type: "text", text: `Unknown MCP server: ${args.server}` }], isError: true };

@@ -63,3 +63,23 @@ test("no positional prompt keeps rpc mode", () => {
 	const config = resolveConfig(["--mode", "rpc"], {}, "/work");
 	assert.equal(config.interfaceName, "rpc");
 });
+
+test("the progress window defaults to zero and reads the environment", () => {
+	assert.equal(resolveConfig([], {}, "/work").persistWithinMs, 0);
+	assert.equal(resolveConfig([], { PI_DURABLE_PERSIST_WITHIN_MS: "250" }, "/work").persistWithinMs, 250);
+	assert.equal(resolveConfig([], { PI_DURABLE_PERSIST_WITHIN_MS: "0" }, "/work").persistWithinMs, 0);
+});
+
+test("an invalid progress window warns and falls back to zero", () => {
+	for (const value of ["-1", "abc", ""]) {
+		const config = resolveConfig([], { PI_DURABLE_PERSIST_WITHIN_MS: value }, "/work");
+		assert.equal(config.persistWithinMs, 0, `${value} falls back to 0`);
+		assert.equal(config.warnings.length, 1, `${value} warns`);
+	}
+});
+
+test("the harness settings bridge carries the progress window", async () => {
+	const { createHarnessSettings } = await import("../dist/harness/settings.js");
+	assert.equal(createHarnessSettings({}, { persistWithinMs: 250 }).progress.persistWithinMs, 250);
+	assert.equal(createHarnessSettings({}).progress.persistWithinMs, 0);
+});

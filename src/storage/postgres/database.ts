@@ -32,6 +32,50 @@ function normalize(value: SqliteValue): unknown {
 	return typeof value === "bigint" ? value.toString() : value;
 }
 
+const JSON_INSERT =
+	/^\s*INSERT\s+INTO\s+(\S+)\s*\(([^)]*)\)\s*SELECT\s+([\s\S]*?)\s+FROM\s+json_each\(\s*\?\s*\)\s+AS\s+item\s+WHERE\s+true\s*([\s\S]*)$/i;
+
+/**
+ * Rewrite Durable's `INSERT ... SELECT json_extract(...) FROM json_each(?)` into a
+ * `VALUES` list with real bindings, so PostgreSQL assigns each cell its column type
+ * (a numeric JSON cell becomes a number, not text). Undefined when the statement
+ * does not match.
+ */
+export function expandJsonInsert(
+	sql: string,
+	params: readonly SqliteValue[],
+): { sql: string; params: SqliteValue[] } | undefined {
+	const match = JSON_INSERT.exec(sql);
+	if (match === null) return undefined;
+	const [, table, columns, , conflict = ""] = match;
+	const payload = params[0];
+	if (typeof payload !== "string") return undefined;
+	let rows: unknown[][];
+	try {
+		const parsed: unknown = JSON.parse(payload);
+		if (!Array.isArray(parsed)) return undefined;
+		rows = parsed as unknown[][];
+	} catch {
+		return undefined;
+	}
+	if (rows.length === 0) return undefined;
+	const width = rows[0]!.length;
+	const values: SqliteValue[] = [];
+	const tuples = rows.map((row) => {
+		const slots = row.map((cell) => {
+			values.push((typeof cell === "object" && cell !== null ? JSON.stringify(cell) : cell) as SqliteValue);
+			return `$${values.length}`;
+		});
+		return `(${slots.join(", ")})`;
+	});
+	void width;
+	const suffix = conflict.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "").trim();
+	return {
+		sql: `INSERT INTO ${table} (${columns}) VALUES ${tuples.join(", ")}${suffix === "" ? "" : ` ${suffix}`}`,
+		params: values,
+	};
+}
+
 async function query(
 	client: PoolClient,
 	sql: string,
@@ -49,7 +93,17 @@ class PostgresExecutor implements SqliteExecutor {
 	}
 
 	async run(sql: string, ...params: SqliteValue[]): Promise<void> {
+		const expanded = expandJsonInsert(sql, params);
+		if (expanded !== undefined) {
+			await this.client.query(expanded.sql, expanded.params.map(normalize));
+			return;
+		}
 		await query(this.client, sql, params);
+	}
+
+	async runCounted(sql: string, ...params: SqliteValue[]): Promise<number> {
+		const result = await this.client.query(translateStatement(sql), params.map(normalize));
+		return result.rowCount ?? 0;
 	}
 
 	async get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {
@@ -118,6 +172,10 @@ export class PostgresDatabase implements SqliteDatabase {
 
 	run(sql: string, ...params: SqliteValue[]): Promise<void> {
 		return this.#enqueue(() => new PostgresExecutor(this.#client).run(sql, ...params));
+	}
+
+	runCounted(sql: string, ...params: SqliteValue[]): Promise<number> {
+		return this.#enqueue(() => new PostgresExecutor(this.#client).runCounted(sql, ...params));
 	}
 
 	get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {

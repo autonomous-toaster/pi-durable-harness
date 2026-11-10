@@ -5,9 +5,9 @@
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import type { Writable } from "node:stream";
-import type { AgentEventStream } from "@earendil-works/pi-durable";
+import type { RevisionStream } from "./events.js";
 import { encodeJsonl } from "../rpc/framing.js";
-import { EventProjector } from "./events.js";
+import { EventProjector, RevisionQueue } from "./events.js";
 
 const IMAGE_MIME: Readonly<Record<string, string>> = {
 	".png": "image/png",
@@ -22,7 +22,7 @@ export interface OneShotDeps {
 	/** Submit one prompt and resolve to whether it was answered. */
 	submitAndWait(content: string | readonly unknown[]): Promise<boolean>;
 	lastAssistantText(): Promise<string | undefined>;
-	watchEvents(): Promise<AgentEventStream>;
+	watchEvents(): Promise<RevisionStream>;
 	isQuiescent(): Promise<boolean>;
 	readonly sessionId: string;
 	readonly cwd: string;
@@ -84,8 +84,13 @@ export async function runOneShot(
 		});
 		const stream = await deps.watchEvents();
 		const projector = new EventProjector((record) => void write(deps.out, record), () => deps.isQuiescent());
-		stream.start(async (events) => projector.handle(events));
-		stop = () => stream.stop();
+		projector.seed(stream.value);
+		const queue = new RevisionQueue(projector);
+		stream.start((call) => queue.push(call));
+		stop = async () => {
+			await queue.idle();
+			await stream.stop();
+		};
 	}
 
 	let answered = true;

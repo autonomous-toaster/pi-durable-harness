@@ -9,7 +9,7 @@
  * verbatim as `custom` entries (task 5.3).
  */
 import { defineEntry, type EntryRecord } from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 
 export type ControlData =
 	| { readonly type: "model_change"; readonly provider: string; readonly modelId: string }
@@ -48,6 +48,9 @@ function controlEntry(entry: EntryRecord, parentId: string | null, data: Control
 			return { ...base, type: "session_info", name: data.name };
 		case "label":
 			return { ...base, type: "label", label: data.label };
+		default:
+			// A control entry whose payload this build does not know is kept verbatim.
+			return { ...base, type: "custom", customType: entry.kind, data };
 	}
 }
 

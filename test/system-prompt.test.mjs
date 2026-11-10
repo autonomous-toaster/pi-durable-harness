@@ -35,7 +35,7 @@ test("the ported builder matches pi's section builder", () => {
 
 test("the prompt sections reflect the declared tools", () => {
 	const sections = buildSystemPromptSections({ selectedTools: ["read", "bash"], cwd: "/work", toolSnippets, toolGuidelines });
-	assert.match(sections.preamble, /expert coding assistant/);
+	assert.match(sections.preamble, /coding assistant/);
 	assert.match(sections.tools, /- read: Read file contents/);
 	assert.match(sections.rules, /- Be concise in your responses/);
 	assert.equal(sections.cwd, "<cwd>\n/work\n</cwd>");

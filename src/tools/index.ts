@@ -4,8 +4,8 @@
  * through the call's `ExecutionEnv`, so the tools run in the sandbox the
  * environment describes. `powershell` is added by durable on Windows.
  */
-import type { Context } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord/context";
+import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { defineExtension, defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createPowerShellTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { codemodeTool } from "./codemode.js";
@@ -72,7 +72,7 @@ function limited(value: string, limit: number | undefined): string {
 export const lsTool = defineTool({
 	name: "ls",
 	description: "List directory contents",
-	parameters: Type.Object({ path: Type.Optional(Type.String()), limit: Type.Optional(Type.Number()) }),
+	parameters: obj({ path: opt(str()), limit: opt(num()) }),
 	execute: async (args, api, context) => {
 		const result = await run(api, ["ls", "-a", args.path ?? "."], context);
 		const body = result.exitCode === 0 ? result.stdout : result.stderr;
@@ -83,10 +83,10 @@ export const lsTool = defineTool({
 export const findTool = defineTool({
 	name: "find",
 	description: "Find files by glob pattern",
-	parameters: Type.Object({
-		pattern: Type.String(),
-		path: Type.Optional(Type.String()),
-		limit: Type.Optional(Type.Number()),
+	parameters: obj({
+		pattern: str(),
+		path: opt(str()),
+		limit: opt(num()),
 	}),
 	execute: async (args, api, context) => {
 		const result = await run(api, ["find", args.path ?? ".", "-name", args.pattern, "-type", "f"], context);
@@ -98,14 +98,14 @@ export const findTool = defineTool({
 export const grepTool = defineTool({
 	name: "grep",
 	description: "Search file contents for patterns",
-	parameters: Type.Object({
-		pattern: Type.String(),
-		path: Type.Optional(Type.String()),
-		glob: Type.Optional(Type.String()),
-		ignoreCase: Type.Optional(Type.Boolean()),
-		literal: Type.Optional(Type.Boolean()),
-		context: Type.Optional(Type.Number()),
-		limit: Type.Optional(Type.Number()),
+	parameters: obj({
+		pattern: str(),
+		path: opt(str()),
+		glob: opt(str()),
+		ignoreCase: opt(bool()),
+		literal: opt(bool()),
+		context: opt(num()),
+		limit: opt(num()),
 	}),
 	execute: async (args, api, context) => {
 		const argv = ["grep", "-rn"];

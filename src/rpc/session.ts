@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { RpcSession } from "../rpc/protocol.js";
-import { EventProjector } from "../harness/events.js";
+import { EventProjector, RevisionQueue } from "../harness/events.js";
 import type { HarnessEngine } from "../harness/engine.js";
 import { toUserContent } from "../harness/input.js";
 import { projectEntries } from "../harness/projection.js";
@@ -300,9 +300,12 @@ export class HarnessSession implements RpcSession {
 	async startEvents(sink: (record: unknown) => void): Promise<() => Promise<void>> {
 		const stream = await this.#engine.watchEvents();
 		const projector = new EventProjector(dispatchTo(this.#bus, sink), () => this.#engine.isQuiescent());
+		projector.seed(stream.value);
+		const queue = new RevisionQueue(projector);
 		this.#bus?.dispatch("session_start", { type: "session_start", sessionId: this.sessionId });
-		stream.start(async (events) => projector.handle(events));
+		stream.start((call) => queue.push(call));
 		return async () => {
+			await queue.idle();
 			await stream.stop();
 		};
 	}

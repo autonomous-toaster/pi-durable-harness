@@ -28,6 +28,8 @@ export interface HarnessConfig {
 	readonly thinking: string | undefined;
 	readonly name: string | undefined;
 	readonly databaseUrl: string | undefined;
+	/** How long a deferred progress commit may stay in memory; `0` stores it at once. */
+	readonly persistWithinMs: number;
 	readonly offline: boolean;
 	readonly help: boolean;
 	readonly warnings: readonly string[];
@@ -89,6 +91,18 @@ export function resolveConfig(
 	// `--session` may name a path or an id; both are treated as the session key.
 	const sessionKey = values.sessionKey ?? values.name;
 	const ephemeral = flags.has("--no-session");
+
+	// Deferred-progress window (task 6.1). An invalid value warns and falls back to 0.
+	let persistWithinMs = 0;
+	const rawPersist = env.PI_DURABLE_PERSIST_WITHIN_MS;
+	if (rawPersist !== undefined) {
+		const parsed = Number(rawPersist);
+		if (rawPersist.trim() === "" || !Number.isFinite(parsed) || parsed < 0) {
+			warnings.push(`invalid PI_DURABLE_PERSIST_WITHIN_MS: ${rawPersist}`);
+		} else {
+			persistWithinMs = parsed;
+		}
+	}
 	const interfaceName: HarnessConfig["interfaceName"] =
 		prompts.length === 0 ? "rpc" : mode === "json" ? "json" : "print";
 
@@ -108,6 +122,7 @@ export function resolveConfig(
 		thinking: values.thinking,
 		name: values.name,
 		databaseUrl: env.PI_DURABLE_DATABASE_URL,
+		persistWithinMs,
 		offline: flags.has("--offline") || env.PI_OFFLINE === "1",
 		help: flags.has("--help") || flags.has("-h"),
 		warnings,

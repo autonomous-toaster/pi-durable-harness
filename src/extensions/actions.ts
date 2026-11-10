@@ -64,7 +64,8 @@ export function installActions(runtime: ExtensionRuntime, engine: HarnessEngine)
 			.allTools()
 			.map((tool) => ({ name: tool.name, description: tool.description ?? "", parameters: tool.parameters }));
 	target.setActiveTools = (names: string[]) => {
-		void engine.configure({ tools: names } as never);
+		// 1.5.2 stores registrations, not names: `pi.agent.tools` is a `ToolRegistration[]`.
+		void engine.configure({ tools: engine.activeTools(names) });
 	};
 	target.refreshTools = () => {};
 

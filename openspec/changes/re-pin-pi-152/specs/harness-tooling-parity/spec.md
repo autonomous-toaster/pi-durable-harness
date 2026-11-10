@@ -12,6 +12,8 @@
 | T2.2 | Build the MCP tool schemas with pi-schema |
 | T2.3 | Apply pi-schema argument coercion |
 | T2.4 | Compare the codemode description to the fixture |
+| T2.5 | Match pi's system prompt sections |
+| T2.6 | Match pi's codemode declaration for an MCP tool |
 | T7.3 | Record the one-way migration in the README |
 
 ## MODIFIED Requirements
@@ -98,6 +100,24 @@ T7.3 SHALL ALWAYS record the one-way migration and the absent rollback in the RE
 
 - **WHEN** T7.3 runs
 - **THEN** T7.3 SHALL record the one-way migration and the absent rollback in the README
+
+### Requirement: The system prompt matches pi
+
+T2.5 SHALL ALWAYS match pi's system prompt sections.
+
+#### Scenario: The builder matches pi's builder
+
+- **WHEN** T2.5 runs
+- **THEN** T2.5 SHALL match pi's system prompt sections
+
+### Requirement: MCP codemode declarations match pi
+
+T2.6 SHALL ALWAYS match pi's codemode declaration for an MCP tool.
+
+#### Scenario: The MCP declaration matches pi
+
+- **WHEN** T2.6 runs
+- **THEN** T2.6 SHALL match pi's codemode declaration for an MCP tool
 
 ## REMOVED Requirements
 

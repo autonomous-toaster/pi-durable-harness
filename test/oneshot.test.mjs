@@ -14,16 +14,14 @@ function output() {
 }
 
 function events() {
+	const value = { conversation: { id: "c" }, entries: [], docs: { "pi.live": {} } };
 	return {
-		snapshot: {},
+		value,
 		start(listener) {
-			void listener([
-				{ type: "run_start", inputs: [] },
-				{ type: "run_end", inputs: [] },
-			]);
+			void listener({ kind: "value", retired: false, ops: [], value: { ...value, docs: { "pi.live": { run: { taskId: "t", inputs: [], turns: 0 } } } } });
+			void listener({ kind: "value", retired: false, ops: [], value });
 		},
-		stop: async () => ({ reason: "stopped" }),
-		closed: Promise.resolve({ reason: "stopped" }),
+		stop: async () => {},
 	};
 }
 

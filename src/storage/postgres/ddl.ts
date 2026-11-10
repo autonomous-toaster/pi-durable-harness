@@ -9,7 +9,10 @@
  *    exceed PostgreSQL's 32-bit `integer`),
  *  - `json_valid(...)` checks dropped (the column stays `text`; the core parses
  *    JSON itself, so no cast is needed),
- *  - `INSERT OR IGNORE INTO` rewritten to `INSERT ... ON CONFLICT DO NOTHING`.
+ *  - `INSERT OR IGNORE INTO` rewritten to `INSERT ... ON CONFLICT DO NOTHING`,
+ *  - `json_each(?)` rewritten to `json_array_elements(?::json)` (one JSON array
+ *    parameter, as Durable's multi-row statements expect),
+ *  - `json_extract(alias.value, '$[n]')` rewritten to `(alias.value #>> '{n}')`.
  */
 
 /** Rewrite `?` placeholders to `$n`, ignoring question marks inside string literals. */
@@ -52,7 +55,18 @@ export function translateStatement(sql: string): string {
 		.replace(/\s+STRICT\b/gi, "")
 		.replace(/\bINTEGER\b/gi, "BIGINT")
 		.replace(/CHECK\s*\(\s*json_valid\s*\([^)]*\)\s*\)/gi, "")
-		.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO");
+		.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO")
+		.replace(/json_each\(\s*\?\s*\)/gi, "json_array_elements(?::json)")
+		.replace(
+			/IN\s*\(\s*SELECT\s+value\s+FROM\s+json_array_elements\(\?::json\)\s*\)/gi,
+			"IN (SELECT (value #>> '{}')::bigint FROM json_array_elements(?::json))",
+		)
+		.replace(
+			/(\w+)\.(\w+)\s*=\s*json_extract\(\s*(\w+)\.value\s*,\s*'\$\[(\d+)\]'\s*\)/gi,
+			"(($1.$2)::text = ($3.value #>> '{$4}'))",
+		)
+		.replace(/\brequested\.value\b/gi, "(requested.value #>> '{}')::bigint")
+		.replace(/json_extract\(\s*(\w+)\.value\s*,\s*'\$\[(\d+)\]'\s*\)/gi, "($1.value #>> '{$2}')");
 	const translated = translatePlaceholders(body);
 	return ignore ? `${translated} ON CONFLICT DO NOTHING` : translated;
 }

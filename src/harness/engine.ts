@@ -8,9 +8,10 @@ import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	Harness,
+	InboxDoc,
+	LiveDoc,
 	MemoryStorage,
 	type AgentChange,
-	type AgentEventStream,
 	type Conversation,
 	type ConversationId,
 	type ConversationView,
@@ -19,7 +20,6 @@ import {
 	type ModelRef,
 	type Storage,
 	type Submission,
-	watchEvents,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -56,6 +56,7 @@ import { toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import { CODEMODE_OUTPUT_TYPES } from "../tools/pi-definitions.js";
 import { computeActivation, computeDeclaredTools } from "../tools/activate.js";
 import { ControlEntry, PolicyEntry, renderTranscriptHtml, type ControlData, type Policy } from "./projection.js";
+import type { Revision, RevisionStream } from "./events.js";
 
 const CONTEXT = BACKGROUND_CONTEXT;
 
@@ -63,7 +64,7 @@ const CONTEXT = BACKGROUND_CONTEXT;
 function appendCodemodeLine(tool: import("@earendil-works/pi-durable").ToolRegistration): void {
 	if (tool.name === "codemode" || tool.name === "tool_search") return;
 	if (!isCallable(exposureOf(tool.name))) return;
-	const resolves = isMcpTool(tool.name) ? "`CallToolResult`" : (CODEMODE_OUTPUT_TYPES[tool.name] ?? "a string");
+	const resolves = isMcpTool(tool.name) ? "`{ content, structuredContent?, isError? }`" : (CODEMODE_OUTPUT_TYPES[tool.name] ?? "a string");
 	const line = `\n\nCodemode: \`tools.${toCodemodeIdentifier(tool.name)}(args)\` resolves to ${resolves}.`;
 	const description = tool.description ?? "";
 	if (!description.endsWith(line)) tool.description = `${description}${line}`;
@@ -133,6 +134,7 @@ export class HarnessEngine {
 	readonly #modelRuntime: ModelRuntime;
 	readonly #closeStorage: () => Promise<void>;
 	readonly #resources: PromptResources;
+	readonly #registry: import("@earendil-works/pi-durable").Registry;
 	/** The tools the conversation declares, captured at open (extension action reads). */
 	#declaredTools: readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown }[] = [];
 	/** Extension commands, registered by the extension host (task 3.9). */
@@ -149,6 +151,7 @@ export class HarnessEngine {
 		settingsManager: SettingsManager;
 		modelRuntime: ModelRuntime;
 		resources: PromptResources;
+		registry: import("@earendil-works/pi-durable").Registry;
 		closeStorage: () => Promise<void>;
 	}) {
 		this.#harness = options.harness;
@@ -156,6 +159,7 @@ export class HarnessEngine {
 		this.#settingsManager = options.settingsManager;
 		this.#modelRuntime = options.modelRuntime;
 		this.#resources = options.resources;
+		this.#registry = options.registry;
 		this.#closeStorage = options.closeStorage;
 	}
 
@@ -163,7 +167,7 @@ export class HarnessEngine {
 		const { config, key, modelRuntime, settingsManager, resources } = options;
 		const opened = await openStorage(config, key);
 		try {
-			const settings: HarnessSettings = createHarnessSettings(settingsManager);
+			const settings: HarnessSettings = createHarnessSettings(settingsManager, { persistWithinMs: config.persistWithinMs });
 			const registry = (await import("@earendil-works/pi-durable")).createRegistry();
 			registry.install(PiCodingTools);
 			registry.install(FileTools);
@@ -227,6 +231,7 @@ export class HarnessEngine {
 				settingsManager,
 				modelRuntime,
 				resources,
+				registry,
 				closeStorage: opened.close,
 			});
 			opened2.#declaredTools = declared.map((tool) => ({
@@ -270,6 +275,14 @@ export class HarnessEngine {
 	/** Every installed tool, for `pi.getAllTools()`. */
 	allTools(): readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown }[] {
 		return this.#declaredTools;
+	}
+
+	/** The registrations naming `names`, for `pi.setActiveTools()`. */
+	activeTools(names: readonly string[]): import("@earendil-works/pi-durable").ToolRegistration[] {
+		const wanted = new Set(names);
+		return (this.#registry.snapshot().tools() as readonly { readonly tool: import("@earendil-works/pi-durable").ToolRegistration }[])
+			.map((entry) => entry.tool)
+			.filter((tool) => wanted.has(tool.name));
 	}
 
 	/** The current thinking level, for `pi.getThinkingLevel()`. */
@@ -345,8 +358,42 @@ export class HarnessEngine {
 		return this.#conversation.agent(CONTEXT);
 	}
 
-	view(): Promise<ConversationView> {
-		return this.#conversation.viewState(CONTEXT).then((state) => state.value);
+	/**
+	 * The built-in documents and the full transcript (tasks 5.1, 5.3).
+	 * `Conversation.viewState()` is gone in 1.5.2, and a watched view is only a
+	 * window, so the state read is assembled from one-shot document reads.
+	 */
+	async view(): Promise<ConversationView> {
+		const id = this.#conversation.id;
+		const [inbox, live, entries] = await Promise.all([
+			this.watchOnce(InboxDoc, id),
+			this.watchOnce(LiveDoc, id),
+			this.entries(Number.MAX_SAFE_INTEGER),
+		]);
+		return {
+			conversation: { id } as unknown as ConversationView["conversation"],
+			entries,
+			docs: {
+				...(inbox === undefined ? {} : { "pi.inbox": inbox as never }),
+				...(live === undefined ? {} : { "pi.live": live as never }),
+			},
+		};
+	}
+
+	/** One-shot document read: acquire the watch, take its value, stop it. */
+	async watchOnce<T extends import("@earendil-works/pi-durable").JsonObject>(
+		token: import("@earendil-works/pi-durable").ConversationDocToken<T>,
+		id: ConversationId,
+	): Promise<T | undefined> {
+		try {
+			const watch = await this.#harness.watchDoc(token, id, CONTEXT);
+			if (watch === undefined) return undefined;
+			const value = watch.value;
+			await watch.stop();
+			return value as T;
+		} catch {
+			return undefined;
+		}
 	}
 
 	entries(limit = 512): Promise<readonly EntryRecord[]> {
@@ -419,6 +466,7 @@ export class HarnessEngine {
 			settingsManager: this.#settingsManager,
 			modelRuntime: this.#modelRuntime,
 			resources: this.#resources,
+			registry: this.#registry,
 			closeStorage: async () => {},
 		});
 	}
@@ -439,8 +487,32 @@ export class HarnessEngine {
 		return this.#conversation.configure(change, CONTEXT);
 	}
 
-	watchEvents(): Promise<AgentEventStream> {
-		return watchEvents(this.#harness, this.#conversation.id, CONTEXT);
+	/**
+	 * Attach the synchronous conversation observer (task 4.1). `advance` only
+	 * forwards, so callers can enqueue and drain outside the observer.
+	 */
+	async watchEvents(): Promise<RevisionStream> {
+		let listener: ((call: Revision) => void) | undefined;
+		const backlog: Revision[] = [];
+		const observation = await this.#harness.observeConversation(
+			this.#conversation.id,
+			{
+				advance: (call) => {
+					if (listener === undefined) backlog.push(call);
+					else listener(call);
+				},
+				end: () => {},
+			},
+			CONTEXT,
+		);
+		return {
+			value: observation.value,
+			start: (next) => {
+				listener = next;
+				for (const call of backlog.splice(0)) next(call);
+			},
+			stop: async () => observation.detach(),
+		};
 	}
 
 	/**

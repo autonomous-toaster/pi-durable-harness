@@ -60,3 +60,15 @@ test("get_state matches the pinned pi response shape", async () => {
 		"thinkingLevel",
 	]);
 });
+
+test("get_state counts the full transcript", async () => {
+	const entries = Array.from({ length: 150 }, (_, index) => ({ id: index, kind: "pi.user", model: [{ role: "user", content: "hi" }] }));
+	const engine = {
+		resolvedAgent: async () => ({ model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" }),
+		policy: async () => ({}),
+		view: async () => ({ entries, docs: {} }),
+	};
+	const session = new HarnessSession(engine, "s1");
+	const state = await session.state();
+	assert.equal(state.messageCount, 150);
+});

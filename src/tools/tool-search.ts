@@ -4,7 +4,6 @@
  * appends them to the conversation's explicit tool list, so they are declared
  * from the next request and recorded in the transcript.
  */
-import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { exposureOf } from "./state.js";
 import { TOOL_SEARCH_DESCRIPTION, TOOL_SEARCH_PARAMETERS } from "./pi-definitions.js";

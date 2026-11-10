@@ -8,14 +8,14 @@ client  ──JSONL──►  harness (this repo)  ──►  Pi Durable Harness
                                                              Memory │ SQLite │ PostgreSQL
 ```
 
-Design and requirements live in the archived OpenSpec changes: [`2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness), [`2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/) (MCP exposure), and [`2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/) (pi 1.4.0 pin, skills, extensions); main specs are under [`openspec/specs/`](openspec/specs/).
+Design and requirements live in the archived OpenSpec changes: [`2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness), [`2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/) (MCP exposure), and [`2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/) (pi pin, skills, extensions), plus [`re-pin-pi-152`](openspec/changes/re-pin-pi-152/) (pi 1.5.2 re-pin and state-based event projection); main specs are under [`openspec/specs/`](openspec/specs/).
 
 ---
 
 ## Requirements
 
 - **Node.js >= 22.19** (the floor shared by every `@earendil-works/*` package; durable's SQLite backend uses `node:sqlite`).
-- **pi `1.4.0`**, pinned exactly. The RPC wire surface and the golden fixtures in `test/fixtures/pi-1.4.0/` are captured from that release; parity claims apply to it.
+- **pi `1.5.2`**, pinned exactly. The RPC wire surface, the golden command fixtures, and the captured event stream in `test/fixtures/pi-1.5.2/` come from that release; parity claims apply to it. `@earendil-works/pi-schema` `1.5.2` is a direct dependency because pi `1.5.0` stopped exporting `Type` from `pi-ai`.
 - Optional: a PostgreSQL server for the Postgres storage backend.
 
 ## Install and build
@@ -24,7 +24,7 @@ Design and requirements live in the archived OpenSpec changes: [`2026-10-08-dura
 npm install          # exact-pinned dependencies
 npm run build        # tsc -> dist/  (the supported release artifact)
 npm run build:bundle # optional single-file ESM bundle -> dist/bundle/cli.js
-npm run check        # typecheck + build + tests (99 tests, 27 PostgreSQL tests skipped by default)
+npm run check        # typecheck + build + tests (PostgreSQL tests skipped without TEST_DATABASE_URL)
 ```
 
 Run:
@@ -184,6 +184,7 @@ Environment variables:
 | Variable | Effect |
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
+| `PI_DURABLE_PERSIST_WITHIN_MS` | How long a deferred progress commit may stay in memory before it is stored. Default `0` (store each partial at once). A non-zero value batches streamed progress and loses up to that much on a crash. |
 | `PI_CODING_AGENT_DIR` | Config directory (default `~/.pi/agent`); tilde is expanded. |
 | `PI_CODING_AGENT_SESSION_DIR` | Overrides the local session directory. |
 | `PI_OFFLINE` | Disables automatic network activity. |
@@ -250,7 +251,7 @@ All of pi's RPC commands are accepted:
 | Sessions | `new_session`, `switch_session`, `fork`, `clone`, `get_fork_messages`, `set_session_name`, `export_html` |
 | Discovery | `get_commands` (extension commands, prompt templates, skills) |
 
-Behavior matched to **pinned pi 1.4.0** (`test/fixtures/pi-1.4.0/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; `extension_ui_response` is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
+Behavior matched to **pinned pi 1.5.2** (`test/fixtures/pi-1.5.2/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; `extension_ui_response` is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
 
 Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `assistantMessageEvent` per change), `message_end`, `tool_execution_start/update/end`, `turn_end`, `agent_end`, `queue_update`, `compaction_start/end`, `auto_retry_start/end`, `entry_appended`, `thinking_level_changed`, `bash_execution_update`, and `agent_settled` (synthesized when the session is quiescent). The internal durable `snapshot` is never forwarded; a fresh client primes from `get_state`/`get_messages`.
 
@@ -304,6 +305,8 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
 - **Single-executable (Node SEA) binary** is not shipped: it would require embedding the QuickJS wasm asset and postject injection. The supported artifacts are the ESM package and the JS bundle.
 - Multi-writer commits to a single session are out of scope; a session has one writer (enforced by a PostgreSQL advisory lock).
+- **No rollback past 1.5.2.** Durable stores `pi.live` at document version 3, which pi-durable `1.4.0` cannot read. Take a database snapshot before the first `1.5.2` write if you might need to return to `1.4.0`.
+- Streamed progress is stored at each partial by default (`PI_DURABLE_PERSIST_WITHIN_MS=0`). A non-zero value trades durability for fewer storage transactions: a crash then loses about that much of the running answer.
 
 ## Testing
 
@@ -314,6 +317,8 @@ TEST_DATABASE_URL=postgres://user:pass@host/db \
 node tools/capture-fixtures.mjs                 # re-capture golden pi RPC fixtures
 PI_ACCEPT_PROMPT=1 node tools/acceptance.mjs    # drive the harness as an external client
 npm run differential                            # diff the model request against pi (mock model + MCP fixture)
+# test/event-fixture.test.mjs replays the pinned run against a mock model and
+# compares the projected records with test/fixtures/pi-1.5.2/events.ndjson
 ```
 
 PostgreSQL can be started locally, e.g.:
@@ -339,7 +344,7 @@ src/
     prompt.ts                pi prompt sections (system, AGENTS.md, skills, cwd, mcp_servers)
     skills.ts                skills as RPC commands, /skill:<name> expansion
     engine.ts                durable Harness over SQLite/Postgres/ephemeral
-    events.ts                durable watchEvents -> pi event projection
+    events.ts                conversation observer + JSON-diff router -> pi event records
     projection.ts            S1 transcript projection, control/policy entries, HTML export
     input.ts                 image content -> durable content blocks
   extensions/
@@ -377,4 +382,5 @@ scripts/                     check.mjs, build-bundle.mjs
 - Session format: <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md>
 - This change: [`openspec/changes/archive/2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness)
 - MCP exposure parity: [`openspec/changes/archive/2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/)
-- pi 1.4.0 pin, skills, and extensions: [`openspec/changes/archive/2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/)
+- pi pin, skills, and extensions: [`openspec/changes/archive/2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/)
+- pi 1.5.2 re-pin and state-based event projection: [`openspec/changes/re-pin-pi-152`](openspec/changes/re-pin-pi-152/)
