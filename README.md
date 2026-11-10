@@ -233,7 +233,7 @@ Storage is selected by configuration and is invisible to the client.
 | **SQLite** | default | Local file at `<sessionDir>/<session-key>.sqlite`, via `node:sqlite`. |
 | **Memory** | `--no-session` | Ephemeral. |
 
-PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`): `?`→`$n`, `INTEGER`→`BIGINT`, `STRICT`/`json_valid` dropped, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`; durable's own migrations run through the facade. It passes durable's storage conformance suite (25 cases) and behaves identically to `MemoryStorage` for a canonical script.
+PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. Durable's own migrations run through the facade. It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.
 
 ## Supported RPC commands
 
@@ -253,7 +253,9 @@ All of pi's RPC commands are accepted:
 
 Behavior matched to **pinned pi 1.5.2** (`test/fixtures/pi-1.5.2/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; `extension_ui_response` is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
 
-Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `assistantMessageEvent` per change), `message_end`, `tool_execution_start/update/end`, `turn_end`, `agent_end`, `queue_update`, `compaction_start/end`, `auto_retry_start/end`, `entry_appended`, `thinking_level_changed`, `bash_execution_update`, and `agent_settled` (synthesized when the session is quiescent). The internal durable `snapshot` is never forwarded; a fresh client primes from `get_state`/`get_messages`.
+Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `assistantMessageEvent` per change, as `text`/`thinking`/`toolcall` `_start`, `_delta`, `_end`), `message_end`, `tool_execution_start/update/end`, `turn_end`, `agent_end`, `queue_update`, `compaction_start/end`, `auto_retry_start/end`, `entry_appended`, `thinking_level_changed`, `bash_execution_update`, and `agent_settled` (synthesized when the session is quiescent).
+
+They are projected from durable state, not from an event log: `src/harness/events.ts` attaches a synchronous `Harness.observeConversation()` observer, records each revision into a queue (the observer may not await or call the session), drains it in order, and routes the revision's JSON-diff paths to records. A client attaching mid-run is primed from the acquisition value, so no snapshot is replayed and a fresh client still primes from `get_state`/`get_messages`. `entry_appended` is this harness's own record — pi's RPC client reads entries through `get_entries` — and the pinned event fixture is what the projection is tested against.
 
 ### Run policy
 
@@ -317,9 +319,7 @@ TEST_DATABASE_URL=postgres://user:pass@host/db \
 node tools/capture-fixtures.mjs                 # re-capture golden pi RPC fixtures
 PI_ACCEPT_PROMPT=1 node tools/acceptance.mjs    # drive the harness as an external client
 npm run differential                            # diff the model request against pi (mock model + MCP fixture)
-TEST_LIVE_MODEL=1 node --test test/progress-window.test.mjs
-                                                # opt-in live model: the progress window
-                                                # stores a partial at 0 and defers it when large
+TEST_LIVE_MODEL=1 node --test test/progress-window.test.mjs   # opt-in: progress window, live model
                                                 # (TEST_LIVE_PROVIDER / TEST_LIVE_MODEL_ID override the model)
 # test/event-fixture.test.mjs replays the pinned run against a mock model and
 # compares the projected records with test/fixtures/pi-1.5.2/events.ndjson
