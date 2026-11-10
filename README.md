@@ -308,7 +308,7 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 - **Single-executable (Node SEA) binary** is not shipped: it would require embedding the QuickJS wasm asset and postject injection. The supported artifacts are the ESM package and the JS bundle.
 - Multi-writer commits to a single session are out of scope; a session has one writer (enforced by a PostgreSQL advisory lock).
 - **No rollback past 1.5.2.** Durable stores `pi.live` at document version 3, which pi-durable `1.4.0` cannot read. Take a database snapshot before the first `1.5.2` write if you might need to return to `1.4.0`.
-- Streamed progress is stored at each partial by default (`PI_DURABLE_PERSIST_WITHIN_MS=0`). A non-zero value trades durability for fewer storage transactions: a crash then loses about that much of the running answer.
+- **Deferred progress trades durability for throughput.** A `PI_DURABLE_PERSIST_WITHIN_MS` above `0` batches streamed progress, so a crash loses up to that much of the running answer.
 
 ## Testing
 
@@ -325,13 +325,7 @@ TEST_LIVE_MODEL=1 node --test test/progress-window.test.mjs   # opt-in: progress
 # compares the projected records with test/fixtures/pi-1.5.2/events.ndjson
 ```
 
-PostgreSQL can be started locally, e.g.:
-
-```bash
-podman run -d --name harness-pg \
-  -e POSTGRES_PASSWORD=harness -e POSTGRES_USER=harness -e POSTGRES_DB=harness \
-  -p 127.0.0.1:55432:5432 docker.io/library/postgres:17-alpine
-```
+Start PostgreSQL as in [Full example: podman + PostgreSQL](#full-example-podman--postgresql).
 
 ## Layout
 
