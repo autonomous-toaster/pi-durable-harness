@@ -94,3 +94,21 @@ T2.4 SHALL ALWAYS materialize a document from its base and deltas.
 
 - **WHEN** T2.4 runs
 - **THEN** T2.4 SHALL materialize a document from its base and deltas
+
+### Requirement: The executor counts changed rows
+
+T3.1 SHALL ALWAYS resolve `runCounted` with the number of changed rows.
+
+#### Scenario: A counted statement reports its rows
+
+- **WHEN** T3.1 runs a statement that changes two rows
+- **THEN** T3.1 SHALL resolve with 2
+
+### Requirement: The facade precedes the conformance suite
+
+T3.1 SHALL complete BEFORE T3.2 SHALL run.
+
+#### Scenario: Conformance follows the facade
+
+- **WHEN** T3.1 completes
+- **THEN** T3.2 SHALL run
