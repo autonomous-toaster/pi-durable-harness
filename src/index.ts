@@ -14,12 +14,12 @@ import {
 	classifyExtension,
 	discoverResources,
 	extensionCommands,
-	inertUi,
 	reportDiagnostics,
 	translateExtension,
 	type DiscoveredResources,
 } from "./extensions/host.js";
 import { ExtensionEventBus } from "./extensions/events.js";
+import { createExtensionContext, emptySessionManager } from "./extensions/context.js";
 import {
 	createSessionManager,
 	emptySnapshot,
@@ -30,6 +30,7 @@ import {
 import { RpcServer } from "./rpc/server.js";
 import { HarnessSession } from "./rpc/session.js";
 import { loadMcpTools } from "./tools/mcp.js";
+import type { RegisteredMcpServer } from "./tools/exposure.js";
 
 const USAGE = "durable-rpc — pi-RPC-compatible harness backed by Pi Durable\n";
 
@@ -65,12 +66,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 		process.stdout.write(USAGE);
 		return;
 	}
-	// A positional prompt and RPC mode together are refused (task 2.5).
-	if (config.prompts.length > 0 && config.mode === "rpc") {
-		process.stderr.write("durable-rpc: RPC mode takes prompts through the prompt command, not as arguments\n");
-		process.exitCode = 1;
-		return;
-	}
+	// An explicit RPC mode ignores positional arguments instead of refusing them:
+	// the config already warned, and pi's own resolver serves RPC either way. A
+	// stray token must never keep a client from reaching the server.
 
 	const key = config.sessionKey ?? config.name ?? basename(config.cwd);
 	const modelRuntime = await ModelRuntime.create();
@@ -86,7 +84,12 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// pi extensions: translate what the loader recorded, report the rest (tasks 3.1-3.11).
 	const loaded = loader.getExtensions();
 	for (const failure of loaded.errors) process.stderr.write(`durable-rpc: extension ${failure.path} failed: ${failure.error}\n`);
-	const translated = loaded.extensions.map(translateExtension);
+	// The session view exists only once the engine and its snapshot do, so the
+	// provider is assigned below and the tool call reads it at call time (task 5.1).
+	let sessionView: (() => Promise<Record<string, unknown>>) | undefined;
+	const translated = loaded.extensions.map((extension) =>
+		translateExtension(extension, () => sessionView?.() ?? Promise.resolve(emptySessionManager())),
+	);
 	const diagnostics = loaded.extensions.flatMap((extension) => classifyExtension(extension).unsupported);
 	reportDiagnostics(diagnostics);
 	applyProviders(loaded.runtime.pendingProviderRegistrations, modelRuntime);
@@ -118,10 +121,18 @@ export async function main(argv: readonly string[]): Promise<void> {
 		agentsFiles: resourceLoader.getAgentsFiles().agentsFiles,
 		skills: resourceLoader.getSkills().skills,
 		prompts: resourceLoader.getPrompts().prompts,
-		systemPrompt: resourceLoader.getSystemPrompt(),
-		appendSystemPrompt: resourceLoader.getAppendSystemPrompt(),
+		// The argv flags layer over the loader's values: `--system-prompt` replaces
+		// the preamble, each `--append-system-prompt` appends after the loader's own.
+		systemPrompt: config.systemPrompt ?? resourceLoader.getSystemPrompt(),
+		appendSystemPrompt: [...resourceLoader.getAppendSystemPrompt(), ...config.appendSystemPrompt],
 	};
-	const mcp = await loadMcpTools(config.agentDir, config.cwd);
+	// Servers an extension registered join the same connection set as `mcp.json`.
+	const registeredMcp: RegisteredMcpServer[] = loaded.runtime.mcpServers.list().map((server) => ({
+		name: server.name,
+		config: server.config as RegisteredMcpServer["config"],
+		source: server.extensionPath,
+	}));
+	const mcp = await loadMcpTools(config.agentDir, config.cwd, registeredMcp);
 
 	const extraExtensions = mcp.tools.length === 0 ? [...translated] : [{ name: "harness.mcp", tools: mcp.tools }, ...translated];
 	const engine = await HarnessEngine.open({
@@ -134,19 +145,30 @@ export async function main(argv: readonly string[]): Promise<void> {
 		mcp: { entries: mcp.entries, settings: mcp.settings },
 	});
 
+	// One snapshot and one context shape serve commands, session handlers, tools,
+	// and the event bus (tasks 5.1-5.3).
+	const snapshot = emptySnapshot();
+	const sessionManager = createSessionManager(snapshot, key);
+	sessionView = async () => {
+		await refreshSnapshot(engine, snapshot);
+		return createSessionManager(snapshot, key);
+	};
+	const extensionContext = (): ReturnType<typeof createExtensionContext> =>
+		createExtensionContext({ cwd: config.cwd, sessionManager });
+
 	// Register extension commands and session-lifecycle handlers on the opened engine (tasks 3.9-3.11).
 	for (const extension of loaded.extensions) {
 		for (const [name, command] of extensionCommands(extension)) {
 			engine.registerCommand(
 				{ name, description: command.description ?? "", source: "extension", sourceInfo: command.sourceInfo },
-				(args) => command.handler(args, {} as never),
+				(args) => command.handler(args, extensionContext() as never),
 			);
 		}
 		engine.installSessionHandlers(
 			(["session_before_switch", "session_before_fork", "session_before_tree"] as const).flatMap(
 				(event) =>
 					(extension.handlers.get(event) ?? []).map(
-						(handler) => (sessionEvent) => handler(sessionEvent as never, {} as never),
+						(handler) => (sessionEvent) => handler(sessionEvent as never, extensionContext() as never),
 					),
 			),
 		);
@@ -155,16 +177,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// durable-backed implementations before any handler runs.
 	installActions(loaded.runtime, engine);
 
-	const snapshot = emptySnapshot();
 	const bus = new ExtensionEventBus(
 		loaded.extensions,
-		{
-			cwd: config.cwd,
-			mode: "rpc",
-			hasUI: true,
-			ui: inertUi(),
-			sessionManager: createSessionManager(snapshot, key),
-		},
+		extensionContext(),
 		(result) =>
 			process.stderr.write(
 				`durable-rpc: extension ${result.extension} returned ${result.field} on ${result.event}; an RPC host does not apply it\n`,

@@ -235,6 +235,17 @@ Storage is selected by configuration and is invisible to the client.
 
 PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. Durable's own migrations run through the facade. It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.
 
+## Running under Open Terminal
+
+Open Terminal starts the agent with `--mode rpc --session-id <id> --append-system-prompt <text|path>` and passes its configured command straight to `create_subprocess_exec`, so `OPEN_TERMINAL_PI_COMMAND` must be a **path to an executable file**, not a command line:
+
+```sh
+#!/bin/sh
+exec node /opt/pi-durable-harness/dist/index.js "$@"
+```
+
+Set `PI_DURABLE_DATABASE_URL` to make a run survive a container restart: without it the session lives in SQLite under the workspace home, which the terminal reaps. Node >= 22.19 is required, and there is no single-executable build to copy — build the harness in the image.
+
 ## Supported RPC commands
 
 All of pi's RPC commands are accepted:
@@ -256,6 +267,12 @@ Behavior matched to **pinned pi 1.5.2** (`test/fixtures/pi-1.5.2/`): malformed J
 Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `assistantMessageEvent` per change, as `text`/`thinking`/`toolcall` `_start`, `_delta`, `_end`), `message_end`, `tool_execution_start/update/end`, `turn_end`, `agent_end`, `queue_update`, `compaction_start/end`, `auto_retry_start/end`, `entry_appended`, `thinking_level_changed`, `bash_execution_update`, and `agent_settled` (synthesized when the session is quiescent).
 
 They are projected from durable state, not from an event log: `src/harness/events.ts` attaches a synchronous `Harness.observeConversation()` observer, records each revision into a queue (the observer may not await or call the session), drains it in order, and routes the revision's JSON-diff paths to records. A client attaching mid-run is primed from the acquisition value, so no snapshot is replayed and a fresh client still primes from `get_state`/`get_messages`. `entry_appended` is this harness's own record — pi's RPC client reads entries through `get_entries` — and the pinned event fixture is what the projection is tested against.
+
+### Extension dialogs
+
+An extension's `ctx.ui.select`, `confirm`, `input`, and `editor` reach an attached RPC client as pi's `extension_ui_request` records (`{type, id, method, title, ...}`) and resolve from the matching `extension_ui_response` (`value`, `confirmed`, or `cancelled`). `ctx.hasUI` is true only while an RPC client is attached, so a hosted extension takes its interactive branch in RPC mode and its fallback in print and json modes. `notify`, `setStatus`, `setWidget`, and `setTitle` stay inert: Open WebUI's adapter ignores them, and awaiting an answer that never comes would stall the tool.
+
+A dialog belongs to the live connection. It settles cancelled when the run is aborted, when the client closes stdin, or at shutdown, and each request's `timeout` is honoured in milliseconds. It does **not** survive a reconnect or a process restart: a client that comes back finds the run aborted, not its unanswered question.
 
 ### Run policy
 
@@ -307,6 +324,7 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
 - **Single-executable (Node SEA) binary** is not shipped: it would require embedding the QuickJS wasm asset and postject injection. The supported artifacts are the ESM package and the JS bundle.
 - Multi-writer commits to a single session are out of scope; a session has one writer (enforced by a PostgreSQL advisory lock).
+- A pending extension dialog does not survive a client reconnect or a process restart; it settles cancelled and the run aborts.
 - **No rollback past 1.5.2.** Durable stores `pi.live` at document version 3, which pi-durable `1.4.0` cannot read. Take a database snapshot before the first `1.5.2` write if you might need to return to `1.4.0`.
 - **Deferred progress trades durability for throughput.** A `PI_DURABLE_PERSIST_WITHIN_MS` above `0` batches streamed progress, so a crash loses up to that much of the running answer.
 

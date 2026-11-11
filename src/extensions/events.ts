@@ -9,15 +9,8 @@
  */
 import type { Extension as PiExtension } from "@earendil-works/pi-coding-agent";
 
-/** The `ctx` pi passes to an event handler, reduced to what an RPC host can offer. */
-export interface EventContext {
-	readonly cwd: string;
-	readonly mode: "rpc";
-	readonly hasUI: true;
-	readonly ui: Record<string, unknown>;
-	/** Read-only session view, as `ctx.sessionManager` in pi. */
-	readonly sessionManager: Record<string, unknown>;
-}
+/** The `ctx` pi passes to an event handler: the same shape tools and commands get. */
+export type EventContext = import("./context.js").ExtensionContextLike;
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 

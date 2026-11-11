@@ -41,3 +41,20 @@ test("the prompt sections reflect the declared tools", () => {
 	assert.equal(sections.cwd, "<cwd>\n/work\n</cwd>");
 	assert.equal(sections.mcp_servers, undefined);
 });
+
+test("the system prompt flags replace the preamble and append an addendum", async () => {
+	const { createPromptExtension } = await import("../dist/harness/prompt.js");
+	const extension = createPromptExtension({
+		cwd: "/work",
+		agentsFiles: [],
+		skills: [],
+		prompts: [],
+		systemPrompt: "Replaced preamble.",
+		appendSystemPrompt: ["First append.", "Second append."],
+	});
+	const input = { env: { cwd: "/work" }, agent: { cwd: "/work", tools: [{ name: "read" }] } };
+	const preamble = extension.sections.find((section) => section.key === "preamble");
+	const addendum = extension.sections.find((section) => section.key === "addendum");
+	assert.equal(await preamble.render(input), "Replaced preamble.");
+	assert.match(await addendum.render(input), /First append\.\n\nSecond append\./);
+});

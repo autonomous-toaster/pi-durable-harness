@@ -7,7 +7,7 @@
 import { McpClient, StdioTransport, StreamableHttpTransport, type Tool as McpTool } from "@earendil-works/pi-mcp";
 import { obj, str } from "@earendil-works/pi-schema";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { loadMcpSettings, resolveToolExposure, type McpSettings, type ResolvedServer, type ToolExposure } from "./exposure.js";
+import { loadMcpSettings, resolveToolExposure, type McpSettings, type RegisteredMcpServer, type ResolvedServer, type ToolExposure } from "./exposure.js";
 
 function mapMcpContent(content: readonly unknown[]): unknown[] {
 	const blocks: unknown[] = [];
@@ -113,8 +113,13 @@ function widestExposure(servers: readonly (ResolvedServer | undefined)[]): ToolE
 }
 
 /** Connect every enabled server, classify its tools, and collect its resources. */
-export async function loadMcpTools(agentDir: string, cwd: string): Promise<LoadedMcp> {
-	const settings = await loadMcpSettings(agentDir, cwd);
+export async function loadMcpTools(
+	agentDir: string,
+	cwd: string,
+	registered: readonly RegisteredMcpServer[] = [],
+): Promise<LoadedMcp> {
+	const settings = await loadMcpSettings(agentDir, cwd, registered);
+	for (const warning of settings.warnings) process.stderr.write(`durable-rpc: ${warning}\n`);
 	const clients = new Map<string, McpClient>();
 	const entries: McpToolEntry[] = [];
 	const resourceServers: string[] = [];

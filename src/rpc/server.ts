@@ -4,12 +4,15 @@
  *
  * Record handling matches the pinned pi 1.4.0 (see test/fixtures): malformed
  * JSON is answered with a `success: false` response that carries no `command`
- * and no `id`; an unknown command is answered by name; `extension_ui_response`
- * is ignored without ending the process.
+ * and no `id`; an unknown command is answered by name; an `extension_ui_response`
+ * settles the dialog it names, and an unknown one is ignored without ending the
+ * process.
  */
+import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { encodeJsonl, readJsonl, writeJsonl } from "./framing.js";
 import type { RpcCommand, RpcSession } from "./protocol.js";
+import { setUiClient, type UiAnswer, type UiRequest } from "./ui-bridge.js";
 
 export class RpcServer {
 	readonly #session: RpcSession;
@@ -17,6 +20,8 @@ export class RpcServer {
 	readonly #output: Writable;
 	#detach: (() => Promise<void>) | undefined;
 	#closing = false;
+	/** Dialogs awaiting an `extension_ui_response`, keyed by the request id. */
+	readonly #pending = new Map<string, (answer: UiAnswer) => void>();
 
 	constructor(session: RpcSession, input: Readable, output: Writable) {
 		this.#session = session;
@@ -47,23 +52,73 @@ export class RpcServer {
 		this.#detach = await this.#session.startEvents((record) => {
 			void this.#write(record);
 		});
-		for await (const line of readJsonl(this.#input)) {
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(line);
-			} catch {
-				await this.#fail(undefined, undefined, "Unknown command: undefined");
-				continue;
+		setUiClient((request) => this.#ask(request));
+		try {
+			for await (const line of readJsonl(this.#input)) {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(line);
+				} catch {
+					await this.#fail(undefined, undefined, "Unknown command: undefined");
+					continue;
+				}
+				if (typeof parsed !== "object" || parsed === null || typeof (parsed as RpcCommand).type !== "string") {
+					await this.#fail(undefined, undefined, "Unknown command: undefined");
+					continue;
+				}
+				const command = parsed as RpcCommand;
+				if (command.type === "extension_ui_response") {
+					this.#settle(command.id, {
+						...(typeof command.value === "string" ? { value: command.value } : {}),
+						...(typeof command.confirmed === "boolean" ? { confirmed: command.confirmed } : {}),
+						...(command.cancelled === true ? { cancelled: true } : {}),
+					});
+					continue;
+				}
+				await this.#dispatch(command);
 			}
-			if (typeof parsed !== "object" || parsed === null || typeof (parsed as RpcCommand).type !== "string") {
-				await this.#fail(undefined, undefined, "Unknown command: undefined");
-				continue;
-			}
-			const command = parsed as RpcCommand;
-			if (command.type === "extension_ui_response") continue;
-			await this.#dispatch(command);
+		} finally {
+			// A departing client answers nothing: every open dialog settles cancelled.
+			setUiClient(undefined);
+			this.#settleAll();
+			await this.#stop();
 		}
-		await this.#stop();
+	}
+
+	/** Send one dialog to the client and resolve its answer (task 3.1). */
+	async #ask(request: UiRequest): Promise<UiAnswer> {
+		const id = randomUUID();
+		const answer = new Promise<UiAnswer>((resolve) => {
+			this.#pending.set(id, resolve);
+			if (request.timeout !== undefined && request.timeout > 0) {
+				const timer = setTimeout(() => this.#settle(id, { cancelled: true }), request.timeout);
+				timer.unref?.();
+			}
+			request.signal?.addEventListener("abort", () => this.#settle(id, { cancelled: true }), { once: true });
+		});
+		await this.#write({
+			type: "extension_ui_request",
+			id,
+			method: request.method,
+			...request.payload,
+			...(request.timeout === undefined ? {} : { timeout: request.timeout }),
+		});
+		return answer;
+	}
+
+	/** Resolve one pending dialog; an unknown id is ignored (task 3.4). */
+	#settle(id: string | undefined, answer: UiAnswer): void {
+		if (id === undefined) return;
+		const resolve = this.#pending.get(id);
+		if (resolve === undefined) return;
+		this.#pending.delete(id);
+		resolve(answer);
+	}
+
+	/** Resolve every pending dialog cancelled (task 3.3). */
+	#settleAll(): void {
+		for (const resolve of [...this.#pending.values()]) resolve({ cancelled: true });
+		this.#pending.clear();
 	}
 
 	async #stop(): Promise<void> {
@@ -97,6 +152,8 @@ export class RpcServer {
 					return;
 				}
 				case "abort":
+					// Aborting the run settles every dialog it holds open.
+					this.#settleAll();
 					await this.#session.abort();
 					await this.#respond(id, "abort", undefined);
 					return;

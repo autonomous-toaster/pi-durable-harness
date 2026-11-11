@@ -3,7 +3,10 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { McpClient } from "@earendil-works/pi-mcp";
 import { createInMemoryTransportPair } from "@earendil-works/pi-mcp/testing";
-import { createMcpTool, loadMcpSettings } from "../dist/tools/mcp.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createMcpTool, loadMcpSettings, loadMcpTools } from "../dist/tools/mcp.js";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -45,4 +48,47 @@ test("an MCP tool is exposed and calls the server", async () => {
 test("a missing mcp.json yields no servers", async () => {
 	const settings = await loadMcpSettings("/nonexistent-agent-dir", "/nonexistent-cwd");
 	assert.deepEqual(settings.servers, []);
+});
+
+test("a server an extension registers joins the resolved set", async () => {
+	const settings = await loadMcpSettings("/nonexistent-agent-dir", "/nonexistent-cwd", [
+		{ name: "ext", config: { command: "node", args: ["server.mjs"] }, source: "/ext/index.js" },
+	]);
+	const server = settings.servers.find((entry) => entry.name === "ext");
+	assert.ok(server, "the registered server is resolved");
+	assert.equal(server.exposure, "codemode");
+});
+
+test("an extension registration shadows an mcp.json entry and says so", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-mcp-"));
+	try {
+		writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { shared: { command: "node", args: ["a.mjs"] } } }));
+		const settings = await loadMcpSettings(dir, dir, [
+			{ name: "shared", config: { command: "node", args: ["b.mjs"] }, source: "/ext/index.js" },
+		]);
+		assert.ok(settings.warnings.some((warning) => /shadows/.test(warning)), "the shadowing is reported");
+		assert.deepEqual(settings.servers.find((entry) => entry.name === "shared").transport.args, ["b.mjs"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("an extension server that cannot connect is named", async () => {
+	const written = [];
+	const original = process.stderr.write.bind(process.stderr);
+	process.stderr.write = (chunk) => {
+		written.push(String(chunk));
+		return true;
+	};
+	let loaded;
+	try {
+		loaded = await loadMcpTools("/nonexistent-agent-dir", "/nonexistent-cwd", [
+			{ name: "broken", config: { command: "/nonexistent-binary-for-test" }, source: "/ext/index.js" },
+		]);
+	} finally {
+		process.stderr.write = original;
+	}
+	assert.equal(loaded.tools.length, 0);
+	await loaded.close();
+	assert.ok(written.some((line) => line.includes("broken")), "the server is named");
 });

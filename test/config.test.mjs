@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveConfig } from "../dist/harness/config.js";
 
 test("reads pi flags and environment variables", () => {
@@ -82,4 +85,37 @@ test("the harness settings bridge carries the progress window", async () => {
 	const { createHarnessSettings } = await import("../dist/harness/settings.js");
 	assert.equal(createHarnessSettings({}, { persistWithinMs: 250 }).progress.persistWithinMs, 250);
 	assert.equal(createHarnessSettings({}).progress.persistWithinMs, 0);
+});
+
+test("the system prompt flags are recorded, append is repeatable", () => {
+	const config = resolveConfig(["--mode", "rpc", "--system-prompt", "You are terse.", "--append-system-prompt", "One.", "--append-system-prompt", "Two."], {}, "/work");
+	assert.equal(config.systemPrompt, "You are terse.");
+	assert.deepEqual(config.appendSystemPrompt, ["One.", "Two."]);
+	assert.equal(config.interfaceName, "rpc");
+	assert.deepEqual(config.warnings, []);
+});
+
+test("a flag value that names an existing file resolves to its contents", () => {
+	const dir = mkdtempSync(join(tmpdir(), "harness-args-"));
+	try {
+		const file = join(dir, "instructions.md");
+		writeFileSync(file, "From the file.\n");
+		assert.equal(resolveConfig(["--system-prompt", file], {}, dir).systemPrompt, "From the file.\n");
+		assert.equal(resolveConfig(["--system-prompt", "not a file, just text"], {}, dir).systemPrompt, "not a file, just text");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a pi value flag does not leak its value into the prompts", () => {
+	const config = resolveConfig(["--mode", "rpc", "--session-id", "s", "--theme", "dark", "--models", "a,b"], {}, "/work");
+	assert.deepEqual(config.prompts, []);
+	assert.equal(config.interfaceName, "rpc");
+});
+
+test("an explicit rpc mode ignores a positional argument", () => {
+	const config = resolveConfig(["--mode", "rpc", "--session-id", "s", "--append-system-prompt", "Be brief."], {}, "/work");
+	assert.equal(config.interfaceName, "rpc");
+	assert.deepEqual(config.prompts, []);
+	assert.deepEqual(config.appendSystemPrompt, ["Be brief."]);
 });

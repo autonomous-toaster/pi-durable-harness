@@ -132,12 +132,38 @@ export function serverReaches(server: ResolvedServer): { codemode: boolean; tool
 	};
 }
 
-/** Load and resolve `mcp.json` from the agent directory and the project (tasks 1.1, 1.2). */
-export async function loadMcpSettings(agentDir: string, cwd: string): Promise<McpSettings> {
+/** A server an extension registered through `pi.registerMcpServer`. */
+export interface RegisteredMcpServer {
+	readonly name: string;
+	readonly config: McpServerConfig;
+	/** Where it came from, for a diagnostic. */
+	readonly source: string;
+}
+
+/**
+ * Load and resolve `mcp.json` from the agent directory and the project, then
+ * add the servers extensions registered (tasks 1.1, 1.2). An extension
+ * registration shadows an `mcp.json` entry of the same name, and says so.
+ */
+export async function loadMcpSettings(
+	agentDir: string,
+	cwd: string,
+	registered: readonly RegisteredMcpServer[] = [],
+): Promise<McpSettings> {
 	const global = (await readJson(join(agentDir, "mcp.json"))) ?? {};
 	const project = (await readJson(join(cwd, ".pi", "mcp.json"))) ?? {};
 	const warnings: string[] = [];
 	const merged = mergeMcpFiles(global, project);
+	if (registered.length > 0) {
+		const servers: Record<string, McpServerConfig> = { ...merged.servers };
+		for (const server of registered) {
+			if (servers[server.name] !== undefined) {
+				warnings.push(`MCP server ${server.name} from ${server.source} shadows the mcp.json entry`);
+			}
+			servers[server.name] = server.config;
+		}
+		merged.servers = servers;
+	}
 	const settings = resolveMcpSettings(
 		{
 			mcpServers: merged.servers,

@@ -10,6 +10,7 @@
  */
 import type { Extension as PiExtension, ModelRuntime, ProviderConfig, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { DISPATCHED_EVENTS, INERT_EVENTS } from "./events.js";
+import { createExtensionContext, emptySessionManager } from "./context.js";
 import {
 	CompactionTask,
 	GenerationTask,
@@ -28,8 +29,7 @@ export interface SurfaceDiagnostic {
 	readonly surface: string;
 }
 
-/** The classification of every pi extension surface (task 3.5). */
-export interface CapabilityClassification {
+/** The classification of every pi extension surface (task 3.5). */export interface CapabilityClassification {
 	readonly hosted: readonly string[];
 	readonly unsupported: readonly SurfaceDiagnostic[];
 }
@@ -99,38 +99,12 @@ export function reportDiagnostics(
 
 type PiHandler = (...args: never[]) => unknown;
 
-/** `ctx.ui` for an extension that expects pi's UI in RPC mode: every call is inert. */
-export function inertUi(): Record<string, unknown> {
-	const noop = (): undefined => undefined;
-	return {
-		select: async () => undefined,
-		confirm: async () => false,
-		input: async () => undefined,
-		editor: async () => undefined,
-		custom: async () => undefined,
-		notify: noop,
-		setStatus: noop,
-		setWidget: noop,
-		setTitle: noop,
-		setWorkingMessage: noop,
-		setWorkingVisible: noop,
-		setWorkingIndicator: noop,
-		setHiddenThinkingLabel: noop,
-		setFooter: noop,
-		setHeader: noop,
-		pasteToEditor: noop,
-		setEditorText: noop,
-		addAutocompleteProvider: noop,
-		setEditorComponent: noop,
-		getEditorText: () => "",
-		getAllThemes: () => [],
-		getTheme: () => undefined,
-		setTheme: () => ({ success: false, error: "Theme switching not supported in RPC mode" }),
-	};
-}
 
 /** Translate an extension's tools into durable tools (task 3.2). */
-function translateTools(extension: PiExtension): ToolRegistration[] {
+function translateTools(
+	extension: PiExtension,
+	sessionView?: () => Promise<Record<string, unknown>>,
+): ToolRegistration[] {
 	const tools: ToolRegistration[] = [];
 	for (const [name, registered] of extension.tools) {
 		const definition = registered.definition;
@@ -141,7 +115,11 @@ function translateTools(extension: PiExtension): ToolRegistration[] {
 				parameters: definition.parameters as never,
 				replay: "unsafe",
 				execute: async (args, api, context) => {
-					const ctx = { cwd: api.env?.cwd, ui: inertUi() };
+					// One context shape for tools, commands, and session handlers (tasks 5.1-5.3).
+					const ctx = createExtensionContext({
+						cwd: api.env?.cwd,
+						sessionManager: sessionView === undefined ? emptySessionManager() : await sessionView(),
+					});
 					const result = (await definition.execute(name, args as never, undefined, undefined, ctx as never)) as {
 						readonly content?: ToolExecutionResult["output"];
 						readonly isError?: boolean;
@@ -165,11 +143,15 @@ function translateTools(extension: PiExtension): ToolRegistration[] {
  * Tools become durable tools, and the hosted lifecycle events become durable
  * task hooks that run in registration order.
  */
-export function translateExtension(extension: PiExtension): DurableExtension {
+export function translateExtension(
+	extension: PiExtension,
+	/** Resolved per call: the session view changes between turns. */
+	sessionView?: () => Promise<Record<string, unknown>>,
+): DurableExtension {
 	const handlers = (event: string): readonly PiHandler[] => (extension.handlers.get(event) ?? []) as readonly PiHandler[];
 	const anyHandler = (event: string): boolean => handlers(event).length > 0;
 
-	const tools = translateTools(extension);
+	const tools = translateTools(extension, sessionView);
 	const hooks = [];
 
 	// `context` then `context_with_system`: both replace the message list (task 3.3).
