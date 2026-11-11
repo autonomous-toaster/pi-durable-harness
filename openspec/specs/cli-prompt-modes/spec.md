@@ -183,12 +183,12 @@ T2.4 SHALL ALWAYS write a session header and the session events in json mode.
 
 ### Requirement: RPC mode rejects a positional prompt
 
-T2.5 SHALL ALWAYS reject a positional prompt in RPC mode.
+T1.4 SHALL ALWAYS serve RPC and ignore a positional argument when RPC mode is explicit.
 
 #### Scenario: RPC mode rejects a positional prompt
 
-- **WHEN** T2.5 runs
-- **THEN** T2.5 SHALL reject a positional prompt in RPC mode
+- **WHEN** T1.4 runs with an explicit RPC mode and a positional argument
+- **THEN** T1.4 SHALL serve RPC and ignore the argument
 
 ### Requirement: Extension translation precedes startup
 
@@ -207,3 +207,12 @@ T1.2 SHALL ALWAYS write each degraded-extension diagnostic to stderr at startup.
 
 - **WHEN** T1.2 runs
 - **THEN** T1.2 SHALL write each degraded-extension diagnostic to stderr at startup
+
+### Requirement: The system prompt flags reach the prompt
+
+T1.5 SHALL ALWAYS render the replacement preamble and each addendum from the startup configuration.
+
+#### Scenario: The flags shape the system prompt
+
+- **WHEN** T1.5 runs with both system prompt flags
+- **THEN** T1.5 SHALL render the replacement preamble followed by each addendum
