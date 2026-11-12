@@ -69,8 +69,22 @@ async function provided() {
 		thinkingLevel: "off",
 		extensions: [],
 	});
+	// The synchronous getters answer from the snapshot, so it is read once first.
+	await runtime.refresh();
+	const session = runtime.session;
+	const have = {
+		queue: session.clearQueue?.(),
+		tree: runtime.sessionManager.getTree?.(),
+		steering: session.getSteeringMessages?.(),
+		followup: session.getFollowUpMessages?.(),
+		stats: session.getSessionStats?.(),
+		forking: session.getUserMessagesForForking?.(),
+		entries: runtime.sessionManager.getEntries?.(),
+		branch: runtime.sessionManager.getBranch?.(),
+	};
 	const keys = (object) => new Set(Object.keys(object));
 	return {
+		shapes: have,
 		session: keys(runtime.session),
 		sessionManager: keys(runtime.sessionManager),
 		services: keys(runtime.services),
@@ -88,10 +102,33 @@ for (const [key, where] of [...needed].sort()) {
 }
 
 const missing = report.filter((row) => !row.present);
+
+/**
+ * Members pi destructures, spreads, or indexes. A stub that returns undefined passes
+ * the presence check and then crashes the first time that command runs, so the shape
+ * is checked too.
+ */
+const shapes = [
+	["session.clearQueue()", () => have.shapes.queue, (value) => typeof value === "object" && Array.isArray(value?.steering) && Array.isArray(value?.followUp)],
+	["sessionManager.getTree()", () => have.shapes.tree, (value) => Array.isArray(value)],
+	["session.getSteeringMessages()", () => have.shapes.steering, (value) => Array.isArray(value)],
+	["session.getFollowUpMessages()", () => have.shapes.followup, (value) => Array.isArray(value)],
+	["session.getSessionStats()", () => have.shapes.stats, (value) => typeof value === "object" && typeof value?.tokens === "object"],
+	["session.getUserMessagesForForking()", () => have.shapes.forking, (value) => Array.isArray(value)],
+	["sessionManager.getEntries()", () => have.shapes.entries, (value) => Array.isArray(value)],
+	["sessionManager.getBranch()", () => have.shapes.branch, (value) => Array.isArray(value)],
+];
 const width = Math.max(...report.map((row) => row.key.length));
 for (const row of report) {
 	process.stdout.write(`${row.present ? "ok  " : "MISS"} ${row.key.padEnd(width)}  ${row.where}\n`);
 }
 process.stdout.write(`\n${report.length - missing.length}/${report.length} members provided`);
 process.stdout.write(missing.length === 0 ? "\n" : `\n${missing.length} missing: ${missing.map((row) => row.key).join(", ")}\n`);
-if (process.argv.includes("--check") && missing.length > 0) process.exitCode = 1;
+const badShapes = shapes.filter(([name, read, check]) => {
+	const value = read();
+	return !check(value);
+});
+for (const [name] of badShapes) process.stdout.write(`SHAPE ${name} returns the wrong shape\n`);
+if (badShapes.length > 0) process.stdout.write(`\n${badShapes.length} members return a shape pi cannot use\n`);
+
+if (process.argv.includes("--check") && (missing.length > 0 || badShapes.length > 0)) process.exitCode = 1;

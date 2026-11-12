@@ -75,6 +75,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	let model: Record<string, unknown> | undefined;
 	let poller: ReturnType<typeof setInterval> | undefined;
 	let lastAssistant: string | undefined;
+	/** Messages awaiting delivery, which escape returns to the editor. */
+	let steeringQueue: string[] = [];
+	let followQueue: string[] = [];
 	/** Renderers that live with pi's built-in tools (codemode), loaded from pi's own files. */
 	let builtinRenderers: Record<string, Record<string, unknown>> = {};
 	/** Turn counter already announced, so the working spinner starts once per turn. */
@@ -313,7 +316,11 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				if (running !== wasRunning) {
 					wasRunning = running;
 					announcedTurn = -1;
+					// The run drained whatever was queued for it.
+					steeringQueue = [];
+					followQueue = [];
 					announce({ type: "agent_end", messages: [] });
+					announce({ type: "queue_update" });
 				}
 			} catch {
 				// One malformed view must not stop the transcript for the rest of the session.
@@ -834,20 +841,26 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		},
 		steer: async (text: string) => {
 			if (await runExtensionCommand(text)) return;
-			await engine.submitAndWait(expand(text), "steer");
+			// Queued, not awaited: pi's steer() returns while the run keeps going.
+			steeringQueue.push(expand(text));
+			announce({ type: "queue_update" });
+			await engine.submit(expand(text), "steer");
 		},
 		followUp: async (text: string) => {
 			if (await runExtensionCommand(text)) return;
-			await engine.submitAndWait(expand(text), "followUp");
+			followQueue.push(expand(text));
+			announce({ type: "queue_update" });
+			await engine.submit(expand(text), "followUp");
 		},
 		sendUserMessage: async (content: string) => {
 			await engine.submitAndWait(content);
 		},
 		sendCustomMessage: () => undefined,
 		abort: () => engine.abort(),
-		clearQueue: () => undefined,
-		getSteeringMessages: () => [],
-		getFollowUpMessages: () => [],
+		// pi destructures this on escape: the pending messages come back to the editor.
+		clearQueue: () => ({ steering: [...steeringQueue], followUp: [...followQueue] }),
+		getSteeringMessages: () => steeringQueue,
+		getFollowUpMessages: () => followQueue,
 		refreshContext: () => undefined,
 		rename: () => undefined,
 		navigateTree: () => undefined,

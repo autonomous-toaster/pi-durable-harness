@@ -17,4 +17,7 @@ test("the adapter provides every member pi's TUI reaches for", () => {
 	const summary = output.trim().split("\n").at(-1) ?? "";
 	assert.match(summary, /^\d+\/\d+ members provided$/, output.split("\n").filter((line) => line.startsWith("MISS")).join("\n"));
 	assert.ok(!output.includes("MISS "), output.split("\n").filter((line) => line.startsWith("MISS")).join("\n"));
+	// A member that exists but returns the wrong shape crashes the command that uses it
+	// (clearQueue() is destructured on escape).
+	assert.ok(!output.includes("SHAPE "), output.split("\n").filter((line) => line.startsWith("SHAPE")).join("\n"));
 });

@@ -37,14 +37,35 @@ const capture = (session) => tmux("capture-pane", "-p", "-t", session);
 const steps = [
 	// The startup panels are longer than a pane and scroll independently, so boot is
 	// reported but not decisive; the chat steps below are what parity is judged on.
-	{ name: "boot", keys: [], settle: 14_000, mode: "set", strict: false },
-	{ name: "prompt", keys: ["Say exactly: alpha bravo"], settle: 16_000 },
+	{ name: "boot", keys: [], settle: { boot: 14_000, wait: 0 }, mode: "set", strict: false },
+	{ name: "prompt", keys: ["Say exactly: alpha bravo"], settle: { boot: 14_000, wait: 16_000 } },
 	// The model words a tool answer differently each run, so this step is reported
 	// but does not decide parity; the row itself is checked by the live test.
-	{ name: "tool", keys: ["Use the bash tool (not codemode) with command: printf parity"], settle: 18_000, strict: false },
-	// codemode draws through its extension's renderer, not a built-in one.
-	{ name: "codemode", keys: ["Use codemode to print hi"], settle: 18_000 },
-	{ name: "session", keys: ["/session"], settle: 6_000 },
+	{ name: "tool", keys: ["Use the bash tool (not codemode) with command: printf parity"], settle: { boot: 14_000, wait: 18_000 }, strict: false },
+	// codemode draws through its extension's renderer, not a built-in one, and a
+	// call made from inside a script draws nested inside its parent's row.
+	{
+		name: "list-tools",
+		keys: ["Use codemode with exactly this code, no changes: return ALL_TOOLS.map((t) => t.name).join(\", \");"],
+		settle: { boot: 14_000, wait: 22_000 },
+		mode: "rows",
+	},
+	{
+		name: "python-in-bash",
+		keys: ["Run this exact bash command, nothing else: python3 -c \"print('top-level python')\""],
+		settle: { boot: 14_000, wait: 22_000 },
+		mode: "rows",
+	},
+	{
+		name: "python-in-bash-in-codemode",
+		keys: [
+			// No nested quotes: the editor would mangle them and both sides would fail.
+			"Use codemode with exactly this code, no changes: const r = await tools.bash({ command: \"python3 --version\" }); return r.output;",
+		],
+		settle: { boot: 14_000, wait: 26_000 },
+		mode: "rows",
+	},
+	{ name: "session", keys: ["/session"], settle: { boot: 14_000, wait: 6_000 } },
 ];
 
 /** Drop what legitimately differs between two runs; keep the last `tail` lines. */
@@ -64,9 +85,11 @@ function normalize(text, tail = 12) {
 		// Known gap: the durable host has no cache warmer, so pi's status line differs.
 		.replaceAll(/Status: Inactive \((cache lifetime|cache warming) unavailable\)/g, "Status: Inactive (cache unavailable)")
 		.replaceAll(/\/[^\s]*sessions\/[^\s]*/g, "<session>")
-		.replaceAll(/[ \t]+/g, " ")
+		// Leading indentation is meaningful (a nested call is indented under its
+		// parent), so only runs inside a line collapse.
+		.replaceAll(/(?<=\S)[ \t]+/g, " ")
 		.split("\n")
-		.map((line) => line.trim())
+		.map((line) => line.trimEnd())
 		.filter((line) => line !== "")
 		.join("\n");
 }
@@ -77,37 +100,55 @@ const commands = {
 	ours: `node ${join(root, "dist", "cli.js")} --provider ${provider} --model ${model}`,
 };
 
-for (const [side, session] of Object.entries(sessions)) {
-	try {
-		tmux("kill-session", "-t", session);
-	} catch {}
-	tmux("new-session", "-d", "-s", session, "-x", "170", "-y", "60", "-c", root);
-	tmux("send-keys", "-t", session, commands[side], "Enter");
-}
-
-const report = [];
-for (const step of steps) {
-	await sleep(step.settle);
+/** Boot both TUIs, run one step, capture, and stop them: a step never sees another's history. */
+async function runStep(step) {
 	for (const [side, session] of Object.entries(sessions)) {
-		for (const keys of step.keys) tmux("send-keys", "-t", session, keys, "Enter");
+		try {
+			tmux("kill-session", "-t", session);
+		} catch {}
+		tmux("new-session", "-d", "-s", session, "-x", "170", "-y", "60", "-c", root);
+		tmux("send-keys", "-t", session, commands[side], "Enter");
 	}
-	if (step.keys.length > 0) await sleep(step.settle);
+	await sleep(step.settle.boot ?? 14_000);
 	const screens = {};
 	for (const [side, session] of Object.entries(sessions)) {
-		// The panes scroll independently: the chat is compared by its recent lines, the
-		// startup panels as a whole set of lines, so a scroll offset is not a difference.
+		for (const keys of step.keys) {
+			// Literal, so `;`, quotes and parentheses reach the editor as typed.
+			tmux("send-keys", "-l", "-t", session, "--", keys);
+			tmux("send-keys", "-t", session, "Enter");
+		}
+	}
+	if (step.keys.length > 0) await sleep(step.settle.wait ?? step.settle);
+	for (const [side, session] of Object.entries(sessions)) {
 		const raw = normalize(capture(session), Infinity);
 		if (step.mode === "set") {
 			screens[side] = raw;
 			continue;
 		}
-		// Anchor on the prompt this step typed, so a scroll offset above it is not a
-		// difference; without an anchor, the recent lines are compared.
+		if (step.mode === "rows") {
+			// Rendering parity, not model parity: the markers a tool row is made of — the
+			// row header, a nested call's check line, the expand hint, the duration — with
+			// their indentation, since a nested call is indented under its parent.
+			screens[side] = raw
+				.split("\n")
+				.filter((line) =>
+					/^\s*(codemode|\$ \S|✓ \w+ .*\d+ms$|\.\.\. \(\d+ (more lines|earlier calls)|Took \S+)/.test(line),
+				)
+				.join("\n");
+			continue;
+		}
 		const anchor = step.keys.at(-1);
 		const lines = raw.split("\n");
 		const at = anchor === undefined ? -1 : lines.findLastIndex((line) => line.includes(anchor.slice(0, 24)));
 		screens[side] = (at === -1 ? lines.slice(-12) : lines.slice(at)).join("\n");
 	}
+	if (!keep) for (const session of Object.values(sessions)) try { tmux("kill-session", "-t", session); } catch {}
+	return screens;
+}
+
+const report = [];
+for (const step of steps) {
+	const screens = await runStep(step);
 	const same =
 		step.mode === "set"
 			? setsEqual(screens.pi.split("\n"), screens.ours.split("\n"))

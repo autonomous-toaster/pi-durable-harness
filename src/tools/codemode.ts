@@ -47,13 +47,49 @@ function textOf(result: ToolExecutionResult): string {
 		.join("");
 }
 
-function render(result: CodemodeResult): ToolExecutionResult {
+/**
+ * pi's codemode renderer draws the nested calls from `details`, so a script that
+ * called three tools lists them; without it the row shows the output alone and the
+ * collapsed preview is the wrong height.
+ */
+interface CallRecord {
+	readonly id: string;
+	readonly name: string;
+	/** pi's renderer reads a string preview, not the arguments themselves. */
+	readonly args: string;
+	status: string;
+	durationMs: number;
+	error?: string;
+}
+
+/** The argument preview pi shows beside a nested call. */
+function previewArgs(args: unknown): string {
+	try {
+		return (JSON.stringify(args) ?? "").slice(0, 200);
+	} catch {
+		return "";
+	}
+}
+
+function render(result: CodemodeResult, records: readonly CallRecord[] = []): ToolExecutionResult {
+	// The sandbox reports names and timings only; our wrappers also saw the arguments.
+	const calls =
+		records.length > 0
+			? records.map((record) => ({ ...record }))
+			: (result.calls ?? []).map((call, index) => ({
+					id: String(index + 1),
+					name: call.name,
+					args: "",
+					status: call.status,
+					durationMs: call.durationMs,
+				}));
+	const details = { calls };
 	if (result.ok) {
 		const value = result.value === undefined ? result.output : result.value;
 		const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-		return { output: [{ type: "text", text }] };
+		return { output: [{ type: "text", text }], details };
 	}
-	return { output: [{ type: "text", text: result.error.message }], isError: true };
+	return { output: [{ type: "text", text: result.error.message }], details, isError: true };
 }
 
 /** pi's composed codemode description from the callable tools (task 5.6). */
@@ -207,16 +243,38 @@ export const codemodeTool = defineTool({
 			};
 		});
 		const sandbox = await createSandbox(discoveryGlobals(catalog));
+		const records: CallRecord[] = [];
 		try {
 			for (const { tool } of api.registry.tools() as readonly { tool: ToolRegistration }[]) {
 				if (tool.name === "codemode" || !callable(tool.name)) continue;
 				sandbox.registerTool({
 					name: tool.name,
 					...(tool.description === undefined ? {} : { description: tool.description }),
-					execute: async (toolArgs: unknown) => scriptValue(tool, await tool.execute(toolArgs as never, api, context)),
+					execute: async (toolArgs: unknown) => {
+						const record: CallRecord = {
+							id: String(records.length + 1),
+							name: tool.name,
+							args: previewArgs(toolArgs),
+							status: "running",
+							durationMs: 0,
+						};
+						records.push(record);
+						const startedAt = performance.now();
+						try {
+							const value = scriptValue(tool, await tool.execute(toolArgs as never, api, context));
+							record.status = "ok";
+							return value;
+						} catch (error) {
+							record.status = "error";
+							record.error = String(error instanceof Error ? error.message : error).slice(0, 200);
+							throw error;
+						} finally {
+							record.durationMs = performance.now() - startedAt;
+						}
+					},
 				});
 			}
-			return render(await sandbox.execute((args as { code: string }).code));
+			return render(await sandbox.execute((args as { code: string }).code), records);
 		} finally {
 			await sandbox.close();
 		}

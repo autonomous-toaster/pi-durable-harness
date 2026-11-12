@@ -17,7 +17,6 @@ const pi = (path) => join(root, "node_modules", "@earendil-works", "pi-coding-ag
 
 /** Accepted gaps: real differences with a reason they are not closed yet. */
 const ACCEPTED = new Map([
-	["queue_update", "durable owns steering and follow-up queues; the TUI shows none"],
 	["bash_execution_update", "executeBash streams through the TUI callback instead"],
 	["summarization_retry_scheduled", "branch summarization is durable's task, not the session's"],
 	["summarization_retry_attempt_start", "branch summarization is durable's task, not the session's"],
