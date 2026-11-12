@@ -7,9 +7,19 @@ import { isCallable, isDeclaredByDefault, type ToolExposure } from "./exposure.j
 import type { McpToolEntry } from "./mcp.js";
 
 let entries: readonly McpToolEntry[] = [];
+let declared: ReadonlySet<string> = new Set();
 
 export function setMcpEntries(next: readonly McpToolEntry[]): void {
 	entries = next;
+}
+
+/** The tools declared to the model: exactly what a codemode script may call. */
+export function setDeclaredTools(names: readonly string[]): void {
+	declared = new Set(names);
+}
+
+export function declaredTools(): ReadonlySet<string> {
+	return declared;
 }
 
 export function mcpEntries(): readonly McpToolEntry[] {
@@ -43,4 +53,15 @@ export function declaredByDefault(name: string): boolean {
 /** Whether a tool is callable from codemode or tool_search. */
 export function callable(name: string): boolean {
 	return isCallable(exposureOf(name));
+}
+
+/**
+ * Whether a script may call this tool: it is declared to the model, or an MCP tool
+ * reached from codemode without being declared. pi passes the declared set to a
+ * script, so an installed-but-off tool (`ls`, `find`, `grep`) is not in `ALL_TOOLS`.
+ */
+export function scriptCallable(name: string): boolean {
+	if (declared.size > 0 && declared.has(name)) return true;
+	const exposure = exposureOf(name);
+	return isMcpTool(name) && (exposure === "codemode" || exposure === "codemode-deferred" || exposure === "deferred");
 }

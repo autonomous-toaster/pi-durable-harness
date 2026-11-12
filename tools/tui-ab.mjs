@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 /**
- * A/B the two TUIs: pi itself and this harness, same cwd, model, and keys.
+ * The TUI feature matrix: pi and this harness, side by side.
  *
- * Both processes get the identical input script in their own tmux session, the
- * screen is captured after each step, volatile parts (token counts, timings,
- * session paths) are normalized, and the remaining difference is printed. Any
- * difference is a parity bug to fix or to record.
+ * Every feature pi's TUI offers is a scenario here. Each runs in a fresh pair of
+ * tmux sessions over the same agent directory, so a step cannot see another's
+ * history, and the two screens are compared after the volatile parts (token
+ * counts, timings, paths, scroll) are normalized. A scenario fails when the
+ * screens differ or when either process reports an uncaught exception.
  *
- *   node tools/tui-ab.mjs                       # boot + prompt + tool + /session
- *   node tools/tui-ab.mjs --provider X --model Y
- *   node tools/tui-ab.mjs --keep                # leave the sessions running
+ *   node tools/tui-ab.mjs                 # the fast scenarios
+ *   node tools/tui-ab.mjs --all           # every scenario, including slow ones
+ *   node tools/tui-ab.mjs --only tool-bash,thinking
+ *   node tools/tui-ab.mjs --list
+ *   node tools/tui-ab.mjs --keep          # leave the last pair running
+ *
+ * The agent directory defaults to ~/.pi-durable/agent, so the runs never touch
+ * the real configuration: PI_DURABLE_AGENT_DIR overrides it.
  */
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,85 +30,77 @@ const option = (name, fallback) => {
 };
 const provider = option("provider", "litellm");
 const model = option("model", "deepseek-v4-1-flash");
+const agentDir = option("agent-dir", process.env.PI_DURABLE_AGENT_DIR ?? join(homedir(), ".pi-durable", "agent"));
 const keep = argv.includes("--keep");
+const all = argv.includes("--all");
+const only = option("only", undefined)?.split(",").map((name) => name.trim());
 const tmux = (...args) => execFileSync("tmux", args, { encoding: "utf8" });
-
-/** Two screens hold the same lines, in whatever order the panes scrolled. */
-const setsEqual = (first, second) =>
-	first.length === second.length && first.every((line) => second.includes(line)) && second.every((line) => first.includes(line));
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const capture = (session) => tmux("capture-pane", "-p", "-t", session);
 
-/** Steps both TUIs receive, with the wait each needs. */
-const steps = [
-	// The startup panels are longer than a pane and scroll independently, so boot is
-	// reported but not decisive; the chat steps below are what parity is judged on.
-	{ name: "boot", keys: [], settle: { boot: 14_000, wait: 0 }, mode: "set", strict: false },
-	{ name: "prompt", keys: ["Say exactly: alpha bravo"], settle: { boot: 14_000, wait: 16_000 } },
-	// The model words a tool answer differently each run, so this step is reported
-	// but does not decide parity; the row itself is checked by the live test.
-	{ name: "tool", keys: ["Use the bash tool (not codemode) with command: printf parity"], settle: { boot: 14_000, wait: 18_000 }, strict: false },
-	// codemode draws through its extension's renderer, not a built-in one, and a
-	// call made from inside a script draws nested inside its parent's row.
-	{
-		name: "list-tools",
-		keys: ["Use codemode with exactly this code, no changes: return ALL_TOOLS.map((t) => t.name).join(\", \");"],
-		settle: { boot: 14_000, wait: 22_000 },
-		mode: "rows",
-	},
-	{
-		name: "python-in-bash",
-		keys: ["Run this exact bash command, nothing else: python3 -c \"print('top-level python')\""],
-		settle: { boot: 14_000, wait: 22_000 },
-		mode: "rows",
-	},
-	{
-		name: "python-in-bash-in-codemode",
-		keys: [
-			// No nested quotes: the editor would mangle them and both sides would fail.
-			"Use codemode with exactly this code, no changes: const r = await tools.bash({ command: \"python3 --version\" }); return r.output;",
-		],
-		settle: { boot: 14_000, wait: 26_000 },
-		mode: "rows",
-	},
-	{ name: "session", keys: ["/session"], settle: { boot: 14_000, wait: 6_000 } },
+/** A scenario: what is typed, how long it needs, and how its screen is compared. */
+const scenarios = [
+	{ name: "boot", steps: [], wait: 14_000, mode: "set" },
+	// The model's prose is not comparable; what a prompt must produce is the footer
+	// chrome and an answer, without either process crashing.
+	{ name: "prompt", steps: [{ send: "Say exactly: alpha bravo" }], wait: 16_000, mode: "chrome" },
+	{ name: "tool-bash", steps: [{ send: "Use the bash tool (not codemode) with command: printf matrix" }], wait: 18_000, mode: "rows" },
+	{ name: "tool-read", steps: [{ send: "Read the first 3 lines of package.json with the read tool" }], wait: 18_000, mode: "rows" },
+	{ name: "tool-write", steps: [{ send: "Use the write tool to create /tmp/pi-ab-write.txt with the text hello" }], wait: 18_000, mode: "rows" },
+	{ name: "codemode-nested", steps: [{ send: 'Use codemode with exactly this code, no changes: const r = await tools.bash({ command: "python3 --version" }); return { out: r.output, code: r.exit_code };' }], wait: 22_000, mode: "rows" },
+	{ name: "codemode-list-tools", steps: [{ send: 'Use codemode with exactly this code, no changes: return ALL_TOOLS.map((t) => t.name).join(", ");' }], wait: 20_000, mode: "rows" },
+	{ name: "thinking", steps: [{ send: "/thinking high" }, { key: "Enter", wait: 3000 }, { send: "Say exactly: thinking works" }], wait: 18_000, mode: "chrome" },
+	{ name: "session-command", mode: "set", steps: [{ send: "/session" }], wait: 6000 },
+	{ name: "model-command", mode: "set", steps: [{ send: "/model" }], wait: 6000 },
+	{ name: "settings-command", mode: "set", steps: [{ send: "/settings" }], wait: 6000 },
+	{ name: "help-command", mode: "chrome", steps: [{ send: "/help" }], wait: 14_000 },
+	{ name: "name-command", mode: "set", steps: [{ send: "/name ab-test" }], wait: 5000 },
+	{ name: "autocomplete-command", mode: "set", steps: [{ type: "/" }], wait: 5000 },
+	{ name: "autocomplete-file", mode: "set", steps: [{ type: "@package" }], wait: 5000 },
+	{ name: "bash-mode", steps: [{ send: "!echo matrix-bash" }, { key: "Enter" }], wait: 8000 },
+	{ name: "template-command", mode: "set", steps: [{ send: "/deepsearch what is MCP" }], wait: 3000 },
+	{ name: "tree-selector", mode: "set", steps: [{ send: "Say exactly: tree" }, { key: "Enter" }, { key: "Escape", wait: 800 }, { key: "Escape" }], wait: 20_000 },
+	{ name: "ctrl-o-expand", steps: [{ send: "Use the bash tool (not codemode) with command: printf expanded" }, { key: "Enter", wait: 16_000 }, { key: "C-o" }], wait: 20_000, mode: "rows", slow: true },
+	{ name: "interrupt-escape", steps: [{ send: "Count slowly from 1 to 40" }, { key: "Enter", wait: 4000 }, { key: "Escape" }], wait: 12_000, slow: true },
+	{ name: "history-ctrl-r", steps: [{ send: "Say exactly: history" }, { key: "Enter", wait: 14_000 }, { key: "C-r" }], wait: 18_000, slow: true },
 ];
 
-/** Drop what legitimately differs between two runs; keep the last `tail` lines. */
+/** Drop what legitimately differs between two runs. */
 function normalize(text, tail = 12) {
-	return text
+	const lines = text
 		.replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
 		.replaceAll(/\x1b\][^\x07]*\x07/g, "")
 		.replaceAll(/↑[\d.]+k? ↓[\d.]+/g, "↑N ↓N")
 		.replaceAll(/\d+(\.\d+)?%\/[\d.]+[kM] \(\w+\)/g, "CTX")
 		.replaceAll(/Took \d+\.\d+s/g, "Took T")
 		.replaceAll(/\d+\.\d+s/g, "T")
-		// Token and cost figures differ between two independent runs of a model.
-		.replaceAll(/(Input|Cached|Uncached|Output|Total|Cost|R\w+): [\d,.]+/g, "$1: N")
+		.replaceAll(/\d+ms/g, "Nms")
 		.replaceAll(/R\d+(\.\d+)?k?/g, "RN")
-		.replaceAll(/\([\d.]+%\)/g, "(N%)")
 		.replaceAll(/CH[\d.]+%/g, "CH%")
-		// Known gap: the durable host has no cache warmer, so pi's status line differs.
-		.replaceAll(/Status: Inactive \((cache lifetime|cache warming) unavailable\)/g, "Status: Inactive (cache unavailable)")
+		.replaceAll(/(Input|Cached|Uncached|Output|Total|Cost): [\d,.]+/g, "$1: N")
 		.replaceAll(/\/[^\s]*sessions\/[^\s]*/g, "<session>")
-		// Leading indentation is meaningful (a nested call is indented under its
-		// parent), so only runs inside a line collapse.
 		.replaceAll(/(?<=\S)[ \t]+/g, " ")
 		.split("\n")
 		.map((line) => line.trimEnd())
-		.filter((line) => line !== "")
-		.join("\n");
+		.filter((line) => line !== "");
+	return tail === Infinity ? lines : lines.slice(-tail);
 }
+
+/** The markers a tool row is made of, indentation kept (a nested call is indented). */
+function rows(lines) {
+	return lines.filter((line) =>
+		/^\s*(codemode|\$ \S|✓ \w+ .*Nms$|\.\.\. \(\d+ (more lines|earlier calls)|Took \S+)/.test(line),
+	);
+}
+
+const CRASH = /uncaughtException|To report this crash|TypeError:|ReferenceError:/;
 
 const sessions = { pi: "ab-pi", ours: "ab-ours" };
 const commands = {
-	pi: `pi --provider ${provider} --model ${model}`,
-	ours: `node ${join(root, "dist", "cli.js")} --provider ${provider} --model ${model}`,
+	pi: `PI_CODING_AGENT_DIR=${agentDir} pi --provider ${provider} --model ${model}`,
+	ours: `PI_CODING_AGENT_DIR=${agentDir} node ${join(root, "dist", "cli.js")} --provider ${provider} --model ${model}`,
 };
 
-/** Boot both TUIs, run one step, capture, and stop them: a step never sees another's history. */
-async function runStep(step) {
+async function run(scenario) {
 	for (const [side, session] of Object.entries(sessions)) {
 		try {
 			tmux("kill-session", "-t", session);
@@ -109,70 +108,79 @@ async function runStep(step) {
 		tmux("new-session", "-d", "-s", session, "-x", "170", "-y", "60", "-c", root);
 		tmux("send-keys", "-t", session, commands[side], "Enter");
 	}
-	await sleep(step.settle.boot ?? 14_000);
-	const screens = {};
+	await sleep(15_000);
 	for (const [side, session] of Object.entries(sessions)) {
-		for (const keys of step.keys) {
-			// Literal, so `;`, quotes and parentheses reach the editor as typed.
-			tmux("send-keys", "-l", "-t", session, "--", keys);
-			tmux("send-keys", "-t", session, "Enter");
+		for (const step of scenario.steps) {
+			if (step.type !== undefined) {
+				tmux("send-keys", "-l", "-t", session, "--", step.type);
+			}
+			if (step.send !== undefined) {
+				// Literal, so `;`, quotes and parentheses reach the editor as typed.
+				tmux("send-keys", "-l", "-t", session, "--", step.send);
+				tmux("send-keys", "-t", session, "Enter");
+			}
+			if (step.key !== undefined) tmux("send-keys", "-t", session, step.key);
+			await sleep(step.wait ?? 250);
 		}
 	}
-	if (step.keys.length > 0) await sleep(step.settle.wait ?? step.settle);
+	await sleep(scenario.wait);
+	const captured = {};
 	for (const [side, session] of Object.entries(sessions)) {
-		const raw = normalize(capture(session), Infinity);
-		if (step.mode === "set") {
-			screens[side] = raw;
-			continue;
-		}
-		if (step.mode === "rows") {
-			// Rendering parity, not model parity: the markers a tool row is made of — the
-			// row header, a nested call's check line, the expand hint, the duration — with
-			// their indentation, since a nested call is indented under its parent.
-			screens[side] = raw
-				.split("\n")
-				.filter((line) =>
-					/^\s*(codemode|\$ \S|✓ \w+ .*\d+ms$|\.\.\. \(\d+ (more lines|earlier calls)|Took \S+)/.test(line),
-				)
-				.join("\n");
-			continue;
-		}
-		const anchor = step.keys.at(-1);
-		const lines = raw.split("\n");
-		const at = anchor === undefined ? -1 : lines.findLastIndex((line) => line.includes(anchor.slice(0, 24)));
-		screens[side] = (at === -1 ? lines.slice(-12) : lines.slice(at)).join("\n");
+		const raw = tmux("capture-pane", "-p", "-t", session);
+		captured[side] = { raw, lines: normalize(raw, Infinity), crashed: CRASH.test(raw) };
 	}
 	if (!keep) for (const session of Object.values(sessions)) try { tmux("kill-session", "-t", session); } catch {}
-	return screens;
+	const { pi: expected, ours: actual } = captured;
+	const view = (entry) => {
+		if (scenario.mode === "set") return entry.lines;
+		if (scenario.mode === "rows") return rows(entry.lines);
+		if (scenario.mode === "chrome") return entry.lines.filter((line) => /\(\w[\w-]*\) \S+ •|^>|^─{20,}$/.test(line)).slice(-4);
+		return entry.lines.slice(-12);
+	};
+	const expectedView = view(expected);
+	const actualView = view(actual);
+	// A panel can be clipped at a different point; what matters is that neither side
+	// shows a line the other does not.
+	const missingFromOurs = expectedView.filter((line) => !actualView.includes(line));
+	const missingFromTheirs = actualView.filter((line) => !expectedView.includes(line));
+	const identical =
+		scenario.mode === "set" || scenario.mode === "chrome"
+			? missingFromOurs.length === 0 && missingFromTheirs.length === 0
+			: expectedView.join("\n") === actualView.join("\n");
+	return { scenario: scenario.name, identical, crashed: { pi: expected.crashed, ours: actual.crashed }, expectedView, actualView };
 }
 
-const report = [];
-for (const step of steps) {
-	const screens = await runStep(step);
-	const same =
-		step.mode === "set"
-			? setsEqual(screens.pi.split("\n"), screens.ours.split("\n"))
-			: screens.pi === screens.ours;
-	report.push({ step: step.name, same, strict: step.strict !== false });
-	if (!same) {
-		const piLines = screens.pi.split("\n");
-		const oursLines = screens.ours.split("\n");
-		const width = Math.max(piLines.length, oursLines.length);
-		const diff = [];
-		for (let line = 0; line < width; line++) {
-			if (piLines[line] === oursLines[line]) continue;
-			diff.push(`  line ${line + 1}\n    pi:   ${piLines[line] ?? "(absent)"}\n    ours: ${oursLines[line] ?? "(absent)"}`);
+const selected = scenarios.filter((scenario) => {
+	if (only !== undefined) return only.includes(scenario.name);
+	return all || scenario.slow !== true;
+});
+
+if (argv.includes("--list")) {
+	for (const scenario of selected) process.stdout.write(`${scenario.name}${scenario.slow ? " (slow)" : ""}\n`);
+	process.exit(0);
+}
+
+process.stdout.write(`agent dir: ${agentDir}\nmodel: ${provider}/${model}\nscenarios: ${selected.length}\n\n`);
+const results = [];
+for (const scenario of selected) {
+	const result = await run(scenario);
+	results.push(result);
+	const status = result.crashed.pi || result.crashed.ours ? "CRASH" : result.identical ? "pass" : "DIFF";
+	process.stdout.write(`${status.padEnd(6)}${scenario.name}\n`);
+	if (status !== "pass") {
+		const expected = result.expectedView;
+		const actual = result.actualView;
+		const width = Math.max(expected.length, actual.length);
+		const shown = [];
+		for (let line = 0; line < width && shown.length < 8; line++) {
+			if (expected[line] === actual[line]) continue;
+			shown.push(`        pi:   ${expected[line] ?? "(absent)"}\n        ours: ${actual[line] ?? "(absent)"}`);
 		}
-		process.stdout.write(`\n=== ${step.name}: DIFFERENT ===\n${diff.slice(0, 12).join("\n")}\n`);
-	} else {
-		process.stdout.write(`=== ${step.name}: identical ===\n`);
+		process.stdout.write(`${shown.join("\n")}\n`);
 	}
 }
 
-if (!keep) for (const session of Object.values(sessions)) try { tmux("kill-session", "-t", session); } catch {}
-
-const differing = report.filter((row) => row.strict && !row.same).map((row) => row.step);
-const informal = report.filter((row) => !row.strict && !row.same).map((row) => row.step);
-if (informal.length > 0) process.stdout.write(`\nnot compared strictly: ${informal.join(", ")}\n`);
-process.stdout.write(differing.length === 0 ? "\nparity: identical at every step\n" : `\nparity: differs at ${differing.join(", ")}\n`);
-process.exitCode = differing.length === 0 ? 0 : 1;
+const failed = results.filter((result) => !result.identical || result.crashed.pi || result.crashed.ours);
+process.stdout.write(`\n${results.length - failed.length}/${results.length} identical\n`);
+if (failed.length > 0) process.stdout.write(`differing: ${failed.map((result) => result.scenario).join(", ")}\n`);
+process.exitCode = failed.length === 0 ? 0 : 1;

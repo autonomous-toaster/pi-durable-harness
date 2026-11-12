@@ -7,6 +7,7 @@ import {
 	ModelRegistry,
 	ModelRuntime,
 	resolveCliModel,
+	ProjectTrustStore,
 	resolveModelScopeWithDiagnostics,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -114,8 +115,22 @@ async function reloadResources(
 		additionalSkillPaths: [...config.skillPaths, ...discovered.skillPaths],
 		additionalPromptTemplatePaths: [...config.promptTemplatePaths, ...discovered.promptPaths],
 	});
-	await loader.reload({ resolveProjectTrust: async () => settingsManager.isProjectTrusted() });
+	await loader.reload({ resolveProjectTrust: async () => projectTrusted(config.agentDir, config.cwd) });
 	return loader;
+}
+
+/**
+ * Whether a project is trusted, as pi decides it: through the trust store, which
+ * inherits a decision from a parent folder. `settingsManager.isProjectTrusted()`
+ * alone is the raw flag and would ignore an inherited decision, so an untrusted
+ * report would hide project prompts and skills pi loads.
+ */
+function projectTrusted(agentDir: string, cwd: string): boolean {
+	try {
+		return new ProjectTrustStore(agentDir).get(cwd) === true;
+	} catch {
+		return false;
+	}
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -203,7 +218,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 		additionalSkillPaths: [...config.skillPaths],
 		additionalPromptTemplatePaths: [...config.promptTemplatePaths],
 	});
-	await loader.reload({ resolveProjectTrust: async () => settingsManager.isProjectTrusted() });
+	await loader.reload({ resolveProjectTrust: async () => projectTrusted(config.agentDir, config.cwd) });
 
 	// pi extensions: translate what the loader recorded, report the rest (tasks 3.1-3.11).
 	const loaded = loader.getExtensions();
@@ -240,6 +255,22 @@ export async function main(argv: readonly string[]): Promise<void> {
 		discovered.skillPaths.length === 0 && discovered.promptPaths.length === 0
 			? loader
 			: await reloadResources(config, settingsManager, discovered);
+	/**
+	 * The TUI shows the loaded extensions in its startup panels, but the loader it is
+	 * given has them switched off when an extension contributed resource paths. This
+	 * forwards everything and answers `getExtensions` from the loader that did load
+	 * them, so the panel lists what ran.
+	 */
+	const tuiResourceLoader =
+		resourceLoader === loader
+			? loader
+			: new Proxy(resourceLoader, {
+					get(target, key, receiver) {
+						if (key === "getExtensions") return () => loaded;
+						const value = Reflect.get(target, key, receiver) as unknown;
+						return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+					},
+				});
 	const resources: PromptResources = {
 		cwd: config.cwd,
 		agentsFiles: resourceLoader.getAgentsFiles().agentsFiles,
@@ -323,7 +354,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 				agentDir: config.agentDir,
 				sessionId: key,
 				settingsManager,
-				resourceLoader,
+				resourceLoader: tuiResourceLoader,
 				modelRuntime,
 				modelRegistry: new ModelRegistry(modelRuntime),
 				thinkingLevel: config.thinking ?? "off",

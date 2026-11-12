@@ -10,12 +10,13 @@ import {
 	InlineCodemodeSandbox,
 	loadQuickJSWasm,
 	toCodemodeIdentifier,
+	type CodemodeOutputItem,
 	type CodemodeResult,
 	type CodemodeSandboxBase,
 	type CodemodeTool,
 } from "@earendil-works/pi-codemode";
 import { defineTool, type ToolExecutionApi, type ToolRegistration, type ToolExecutionResult } from "@earendil-works/pi-durable";
-import { callable, mcpEntries } from "./state.js";
+import { callable, mcpEntries, scriptCallable } from "./state.js";
 import {
 	CODEMODE_CONTRIBUTION,
 	CODEMODE_DESCRIPTION,
@@ -71,7 +72,90 @@ function previewArgs(args: unknown): string {
 	}
 }
 
-function render(result: CodemodeResult, records: readonly CallRecord[] = []): ToolExecutionResult {
+/** pi's value text: a string as is, anything else compact JSON. */
+function valueText(value: unknown): string {
+	if (typeof value === "string") return value;
+	return JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * The script's items as the model sees them: with more than one text item each is
+ * marked, and `console.*` output follows the rest in its own block.
+ */
+function formatOutput(output: readonly CodemodeOutputItem[]): Record<string, unknown>[] {
+	const total = output.filter((item) => item.type === "text" && item.console !== true).length;
+	const items: Record<string, unknown>[] = [];
+	const consoleLines: string[] = [];
+	let index = 0;
+	for (const item of output) {
+		if (item.type === "image") {
+			items.push({ type: "image", data: item.data, mimeType: item.mimeType });
+		} else if (item.console === true) {
+			consoleLines.push(item.text);
+		} else {
+			index++;
+			items.push({ type: "text", text: total > 1 ? `==> text ${index}/${total} <==\n${item.text}` : item.text });
+		}
+	}
+	if (consoleLines.length > 0) {
+		items.push({ type: "text", text: `<console_output>\n${consoleLines.join("\n")}\n</console_output>` });
+	}
+	return items;
+}
+
+/** Adjacent text items joined, each part starting on its own line (pi's own join). */
+function joinAdjacentText(items: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+	const joined: Record<string, unknown>[] = [];
+	let parts: string[] = [];
+	let lastPart = "";
+	const flush = (): void => {
+		if (parts.length > 0) joined.push({ type: "text", text: parts.join("") });
+		parts = [];
+		lastPart = "";
+	};
+	for (const item of items) {
+		if (item.type !== "text") {
+			flush();
+			joined.push(item);
+			continue;
+		}
+		const text = String(item.text ?? "");
+		if (lastPart !== "" && !lastPart.endsWith("\n")) {
+			parts.push("\n");
+			lastPart = "\n";
+		}
+		parts.push(text);
+		if (text !== "") lastPart = text;
+	}
+	flush();
+	return joined;
+}
+
+/** pi's failure text: the script's stack, or the kind, then the calls already made. */
+function formatError(result: CodemodeResult, calls: readonly CallRecord[]): string {
+	if (result.ok) return "";
+	const { error } = result;
+	const head =
+		error.kind === "script"
+			? (error.stack ?? `${error.name ?? "Error"}: ${error.message}`)
+			: error.kind === "timeout"
+				? `Script timed out: ${error.message}`
+				: error.kind === "aborted"
+					? `Script aborted: ${error.message}`
+					: `Script sandbox failed: ${error.message}`;
+	const summary =
+		calls.length === 0
+			? "No tool calls were made."
+			: `Tool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ")}`;
+	return `${head}\n\n${summary}`;
+}
+
+/**
+ * pi's codemode result, item for item: a header block the renderer strips, then the
+ * script's output with the returned value appended as text. The header is what the
+ * renderer matches on, and the joined output is what its preview counts lines of.
+ */
+function render(result: CodemodeResult, records: readonly CallRecord[] = [], wallSeconds = 0): ToolExecutionResult {
 	// The sandbox reports names and timings only; our wrappers also saw the arguments.
 	const calls =
 		records.length > 0
@@ -84,12 +168,16 @@ function render(result: CodemodeResult, records: readonly CallRecord[] = []): To
 					durationMs: call.durationMs,
 				}));
 	const details = { calls };
-	if (result.ok) {
-		const value = result.value === undefined ? result.output : result.value;
-		const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-		return { output: [{ type: "text", text }], details };
-	}
-	return { output: [{ type: "text", text: result.error.message }], details, isError: true };
+	const output: CodemodeOutputItem[] = [...(result.output ?? [])];
+	if (result.ok && result.value !== undefined) output.push({ type: "text", text: valueText(result.value) });
+	const items = formatOutput(output);
+	if (!result.ok) items.push({ type: "text", text: `Script error:\n${formatError(result, calls)}` });
+	const header = `${result.ok ? "Script completed" : "Script failed"}\nWall time ${wallSeconds.toFixed(1)} seconds\nOutput:\n`;
+	return {
+		output: [{ type: "text", text: header }, ...joinAdjacentText(items)] as never,
+		details,
+		...(result.ok ? {} : { isError: true }),
+	};
 }
 
 /** pi's composed codemode description from the callable tools (task 5.6). */
@@ -233,7 +321,7 @@ export const codemodeTool = defineTool({
 		// globals can close over it.
 		const callableTools = (api.registry.tools() as readonly { tool: ToolRegistration }[])
 			.map((entry) => entry.tool)
-			.filter((tool) => tool.name !== "codemode" && callable(tool.name));
+			.filter((tool) => tool.name !== "codemode" && scriptCallable(tool.name));
 		const catalog: DiscoveryEntry[] = callableTools.map((tool) => {
 			const entry = mcpEntries().find((candidate) => candidate.name === tool.name);
 			return {
@@ -246,7 +334,7 @@ export const codemodeTool = defineTool({
 		const records: CallRecord[] = [];
 		try {
 			for (const { tool } of api.registry.tools() as readonly { tool: ToolRegistration }[]) {
-				if (tool.name === "codemode" || !callable(tool.name)) continue;
+				if (tool.name === "codemode" || !scriptCallable(tool.name)) continue;
 				sandbox.registerTool({
 					name: tool.name,
 					...(tool.description === undefined ? {} : { description: tool.description }),
@@ -274,7 +362,9 @@ export const codemodeTool = defineTool({
 					},
 				});
 			}
-			return render(await sandbox.execute((args as { code: string }).code), records);
+			const startedAt = performance.now();
+			const result = await sandbox.execute((args as { code: string }).code);
+			return render(result, records, (performance.now() - startedAt) / 1000);
 		} finally {
 			await sandbox.close();
 		}

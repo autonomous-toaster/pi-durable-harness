@@ -24,7 +24,25 @@ function present(base: ToolRegistration, definition: PiToolDefinition): ToolRegi
 			const schema = PI_TOOL_OUTPUT_SCHEMAS[base.name];
 			return schema === undefined ? {} : { structuredOutputSchema: schema as never };
 		})(),
-		execute: (args, api, context) => base.execute(args as never, api, context),
+		execute: async (args, api, context) => {
+			const startedAt = Date.now();
+			const result = await base.execute(args as never, api, context);
+			// pi's shell tools hand programs snake_case fields and the wall time; the
+			// declaration promises them, and a codemode script reads them by name.
+			if (base.name !== "bash" && base.name !== "powershell") return result;
+			const structured = result.structuredOutput as Record<string, unknown> | undefined;
+			if (structured === undefined) return result;
+			return {
+				...result,
+				structuredOutput: {
+					output: structured.output,
+					truncated: structured.truncated,
+					...(structured.fullOutputPath === undefined ? {} : { full_output_path: structured.fullOutputPath }),
+					exit_code: structured.exitCode,
+					wall_time_seconds: (Date.now() - startedAt) / 1000,
+				},
+			} as typeof result;
+		},
 	});
 }
 

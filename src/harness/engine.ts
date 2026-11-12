@@ -48,7 +48,7 @@ import { FileTools, CodemodeTools, PiCodingTools, platformShellTools } from "../
 import { configureCodemodeDescription } from "../tools/codemode.js";
 import { type McpSettings } from "../tools/exposure.js";
 import type { McpToolEntry } from "../tools/mcp.js";
-import { setMcpEntries, exposureOf, isMcpTool } from "../tools/state.js";
+import { setDeclaredTools, setMcpEntries, exposureOf, isMcpTool } from "../tools/state.js";
 import { isCallable } from "../tools/exposure.js";
 import { toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import { CODEMODE_OUTPUT_TYPES } from "../tools/pi-definitions.js";
@@ -231,6 +231,8 @@ export class HarnessEngine {
 				defaultTools,
 				codemodeMode,
 			);
+			// A script may call what the model may call; the codemode tool reads this set.
+			setDeclaredTools(declared.map((tool) => tool.name));
 			if (activation.codemode) for (const tool of declared) appendCodemodeLine(tool);
 			if (activation.codemode) {
 				const entryTools = registry

@@ -43,7 +43,10 @@ test("codemode exposes callable tools and withholds hidden and model-only ones",
 	const tools = [registration("mcp__s__t"), registration("mcp__s__h"), registration("mcp__s__m")];
 	const hit = await codemodeTool.execute({ code: "return await tools.mcp__s__t({});" }, apiWith(tools), context);
 	assert.notEqual(hit.isError, true);
-	assert.equal(hit.output[0].text, "ok");
+	// pi's shape: a header the TUI strips, then the script's output and its value.
+	assert.match(hit.output[0].text, /^Script completed\nWall time [\d.]+ seconds\nOutput:\n$/);
+	assert.equal(hit.output.slice(1).map((block) => block.text).join(""), "ok");
+	assert.equal(hit.details.calls[0].name, "mcp__s__t");
 
 	const miss = await codemodeTool.execute({ code: "return await tools.mcp__s__h({});" }, apiWith(tools), context);
 	assert.equal(miss.isError, true);
