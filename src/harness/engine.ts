@@ -162,6 +162,8 @@ export class HarnessEngine {
 	readonly #modelScope: readonly ScopedModel[];
 	readonly #resources: PromptResources;
 	readonly #registry: import("@earendil-works/pi-durable").Registry;
+	/** The thinking level last configured, so the synchronous getter can answer. */
+	#thinkingLevel: string | undefined;
 	/** The tools the conversation declares, captured at open (extension action reads). */
 	#declaredTools: readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown }[] = [];
 	/** Extension commands, registered by the extension host (task 3.9). */
@@ -267,6 +269,7 @@ export class HarnessEngine {
 				...(opened.stamp === undefined ? {} : { stamp: opened.stamp }),
 				...(options.modelScope === undefined ? {} : { modelScope: options.modelScope }),
 			});
+			opened2.#thinkingLevel = agent.thinkingLevel ?? undefined;
 			opened2.#declaredTools = declared.map((tool) => ({
 				name: tool.name,
 				description: tool.description,
@@ -318,9 +321,9 @@ export class HarnessEngine {
 			.filter((tool) => wanted.has(tool.name));
 	}
 
-	/** The current thinking level, for `pi.getThinkingLevel()`. */
+	/** The current thinking level, for `pi.getThinkingLevel()` and pi's footer. */
 	currentThinkingLevel(): string | undefined {
-		return undefined;
+		return this.#thinkingLevel;
 	}
 
 	/** Register an extension command so `get_commands` and prompt resolution see it (task 3.9). */
@@ -495,7 +498,7 @@ export class HarnessEngine {
 
 	async fork(at: string): Promise<HarnessEngine> {
 		const conversation = await this.#conversation.fork(at as never, { ownership: { kind: "ownerless" } }, CONTEXT);
-		return new HarnessEngine({
+		const forked = new HarnessEngine({
 			harness: this.#harness,
 			conversation,
 			settingsManager: this.#settingsManager,
@@ -506,6 +509,8 @@ export class HarnessEngine {
 			...(this.#stamp === undefined ? {} : { stamp: this.#stamp }),
 			modelScope: this.#modelScope,
 		});
+		forked.#thinkingLevel = this.#thinkingLevel;
+		return forked;
 	}
 
 	async switchTo(id: string): Promise<boolean> {
@@ -520,8 +525,9 @@ export class HarnessEngine {
 		return this.#conversation.compact(instructions, CONTEXT);
 	}
 
-	configure(change: AgentChange): Promise<void> {
-		return this.#conversation.configure(change, CONTEXT);
+	async configure(change: AgentChange): Promise<void> {
+		await this.#conversation.configure(change, CONTEXT);
+		if (change.thinkingLevel != null) this.#thinkingLevel = change.thinkingLevel;
 	}
 
 	/**
