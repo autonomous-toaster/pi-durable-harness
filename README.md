@@ -24,6 +24,8 @@ Design and requirements live in the archived OpenSpec changes: [`2026-10-08-dura
 npm install          # exact-pinned dependencies
 npm run build        # tsc -> dist/  (the supported release artifact)
 npm run build:bundle # self-contained single-file ESM bundle -> dist/bundle/cli.js
+npm run build:sea    # Node SEA executable -> dist/sea/pi-durable-harness
+                     # (needs a SEA-capable Node: official builds yes, Homebrew no)
 npm run check        # typecheck + build + tests (PostgreSQL tests skipped without TEST_DATABASE_URL)
 ```
 
@@ -37,7 +39,7 @@ node dist/bundle/cli.js --help
 
 The package installs one command, **`pi-durable-harness`** (`bin` in `package.json`, running `dist/cli.js`), so `npm link` makes it available on `PATH`. Diagnostics it writes to stderr are prefixed with the same name.
 
-The package is private. Two artifacts are supported: the ESM package (`dist/`) and one JavaScript file (`dist/bundle/cli.js`) that runs anywhere Node does, with no `node_modules` beside it. A Node SEA binary is not shipped — see [Limitations](#limitations).
+The package is private. Three artifacts are supported: the ESM package (`dist/`), one JavaScript file (`dist/bundle/cli.js`) that runs anywhere Node does with no `node_modules` beside it, and a single Node SEA executable (`dist/sea/pi-durable-harness`) that needs no Node installed. See [Limitations](#limitations) for what the SEA build gives up.
 
 ## Quick start (RPC)
 
@@ -329,7 +331,9 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 - **Provider-level extension hooks** are reported rather than applied: `before_provider_request`, `before_provider_headers`, `after_provider_response`, and `provider_stream_event`, because durable exposes the message list and the parsed message, not the provider payload or headers. `before_agent_start`'s `systemPrompt` and `message` results are reported the same way.
 - The `read` tool cannot read image files; image *input* in prompts is supported (mapped to content blocks).
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
-- **Single-executable (Node SEA) binary** is not shipped, and not because of `postject`: SEA is a first-class Node feature (`--build-sea` on Node 26), and the codemode package already takes an injected `wasm` module and an injected `worker` entry for exactly this case. It is blocked by three concrete things: the Node build used to package (both `--build-sea` and `--experimental-sea-config` answer "Single executable application is disabled" here), the worker thread codemode runs each VM in, and `pi-internals.ts` reaching a package path that a SEA blob has no `node_modules` to resolve. Wire the `wasm`/`worker` options from `sea.getRawAsset`, and build on a SEA-enabled Node, before claiming one. The ESM package and the single-file bundle are the supported artifacts.
+- **The Node SEA build needs a SEA-capable Node.** A *shared* build — Homebrew's, for example — answers "Single executable application is disabled"; an official Node build works (`npx -y node@22.19.0 scripts/build-sea.mjs`). The SEA main is CommonJS, so `src/cli.ts` and `pi-internals.ts` carry no top-level await, and pi's codemode composer is loaded with `import.meta.url` defined, since CommonJS has none.
+- **The SEA binary runs codemode inline.** A blob has no worker file to point at, so the sandbox falls back to the inline one with the wasm the blob carries. Its deadline is an interrupt budget rather than a timer: a script that computes without awaiting a tool is stopped by a poll count, not by wall-clock time.
+- **The SEA binary is large** — about 122 MiB, because it is a copy of Node with a 17 MB payload.
 - Multi-writer commits to a single session are out of scope; a session has one writer (enforced by a PostgreSQL advisory lock).
 - A pending extension dialog does not survive a client reconnect or a process restart; it settles cancelled and the run aborts.
 - **No rollback past 1.5.2.** Durable stores `pi.live` at document version 3, which pi-durable `1.4.0` cannot read. Take a database snapshot before the first `1.5.2` write if you might need to return to `1.4.0`.

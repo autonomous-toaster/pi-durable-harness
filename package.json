@@ -27,7 +27,8 @@
 		"typecheck": "tsc -p tsconfig.json --noEmit",
 		"test": "node --test",
 		"differential": "node tools/differential-mcp.mjs",
-		"check": "node scripts/check.mjs"
+		"check": "node scripts/check.mjs",
+		"build:sea": "node scripts/build-sea.mjs"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.5.2",
@@ -43,6 +44,7 @@
 		"@types/node": "22.8.7",
 		"@types/pg": "8.15.5",
 		"esbuild": "0.28.2",
+		"postject": "1.0.0-alpha.6",
 		"typescript": "5.8.3"
 	},
 	"repository": {

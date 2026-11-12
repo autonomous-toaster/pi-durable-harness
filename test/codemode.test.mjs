@@ -49,19 +49,19 @@ test("codemode exposes callable tools and withholds hidden and model-only ones",
 	assert.equal(miss.isError, true);
 });
 
-test("the codemode description lists callable tools and hides deferred ones", () => {
+test("the codemode description lists callable tools and hides deferred ones", async () => {
 	setMcpEntries([entry("mcp__s__a", "s", "codemode"), entry("mcp__d__x", "d", "codemode-deferred")]);
 	const tools = [registration("mcp__s__a"), registration("mcp__d__x")];
-	const description = renderCodemodeDescription(tools);
+	const description = await renderCodemodeDescription(tools);
 	// pi keeps codemode-exposure MCP tools out of the description; codemode-deferred tools are listed.
 	assert.doesNotMatch(description, /mcp__s__a/);
 	assert.match(description, /mcp__d__x/);
 });
 
-test("the codemode description stays within the inline budget", () => {
+test("the codemode description stays within the inline budget", async () => {
 	const entries = Array.from({ length: 400 }, (_, index) => entry(`mcp__s__tool_${index}`, "s", "codemode"));
 	setMcpEntries(entries);
-	const description = renderCodemodeDescription(entries.map((item) => item.registration));
+	const description = await renderCodemodeDescription(entries.map((item) => item.registration));
 	assert.ok(description.length < 20_000);
 });
 

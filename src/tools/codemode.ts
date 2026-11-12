@@ -43,7 +43,7 @@ function render(result: CodemodeResult): ToolExecutionResult {
 }
 
 /** pi's composed codemode description from the callable tools (task 5.6). */
-export function renderCodemodeDescription(tools: readonly ToolRegistration[]): string {
+export async function renderCodemodeDescription(tools: readonly ToolRegistration[]): Promise<string> {
 	const entries = mcpEntries();
 	const namespaces = new Map(entries.map((entry) => [entry.name, { name: `mcp__${entry.server}` }]));
 	const guidelines = new Map<string, readonly string[]>(
@@ -131,6 +131,6 @@ export const codemodeTool = defineTool({
 });
 
 /** Apply pi's composed description once the exposure table and the callable set are known (task 5.6). */
-export function configureCodemodeDescription(tools: readonly ToolRegistration[] = []): void {
-	codemodeTool.description = renderCodemodeDescription(tools);
+export async function configureCodemodeDescription(tools: readonly ToolRegistration[] = []): Promise<void> {
+	codemodeTool.description = await renderCodemodeDescription(tools);
 }

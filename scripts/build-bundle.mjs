@@ -5,11 +5,8 @@
 // from the ESM entry: Node built-ins stay external (platform: node), every
 // package is inlined, and the file runs with no `node_modules` beside it.
 //
-// A Node SEA binary is a separate, unshipped step. SEA is native to Node
-// (`--build-sea`), and pi-codemode takes an injected `wasm` module and `worker`
-// entry for compiled executables; what is missing is a SEA-enabled Node build
-// to package with and the wiring of `sea.getRawAsset` into those two options.
-// The bundle below is the artifact to feed it once that exists.
+// The Node SEA executable is a separate step (`npm run build:sea`), which builds
+// its own CommonJS bundle because a SEA main cannot be ESM.
 import { build } from "esbuild";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";

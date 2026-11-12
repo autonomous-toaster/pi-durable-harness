@@ -222,7 +222,7 @@ export class HarnessEngine {
 				);
 				const declaredNames = new Set(declared.map((tool) => tool.name));
 				void declaredNames;
-				configureCodemodeDescription(
+				await configureCodemodeDescription(
 					entryTools.filter((entry) => indirect.has(entry.tool.name)).map((entry) => entry.tool),
 				);
 			}
