@@ -16,7 +16,6 @@ import type { HarnessConfig } from "./config.js";
 export const DEFAULT_TENANT = "default";
 
 /** The one PostgreSQL schema every session opens inside. */
-export const DEFAULT_SCHEMA = "harness";
 
 /** Table holding one row per session, for the newest-use lookup. */
 const CATALOG = "harness_sessions";

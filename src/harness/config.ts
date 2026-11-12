@@ -9,6 +9,9 @@ import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+/** The one PostgreSQL schema every session opens inside unless PI_DURABLE_PG_SCHEMA says otherwise. */
+export const DEFAULT_SCHEMA = "durable";
+
 /** Expand a leading `~` the way pi's config resolver does. */
 function expandTilde(path: string): string {
 	return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
@@ -172,7 +175,7 @@ export function resolveConfig(
 		warnings.push("--fork ignores --continue and --session; it copies into --session-id or a new session");
 	}
 	const tenant = text("tenant") ?? "default";
-	const schema = env.PI_DURABLE_PG_SCHEMA ?? "harness";
+	const schema = env.PI_DURABLE_PG_SCHEMA ?? DEFAULT_SCHEMA;
 	const sessionError =
 		sessionKey !== undefined && !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(sessionKey)
 			? `invalid session id ${JSON.stringify(sessionKey)}: use letters, numbers, ".", "_" and "-", starting and ending with a letter or number`

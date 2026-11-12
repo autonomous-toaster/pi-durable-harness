@@ -215,7 +215,7 @@ Environment variables:
 | Variable | Effect |
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
-| `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `harness`). |
+| `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `durable`). |
 | `PI_DURABLE_PG_SSL` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a CA. |
 | `PI_DURABLE_PG_SSL_CA` | CA certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |
 | `PI_DURABLE_PG_SSL_CERT` / `PI_DURABLE_PG_SSL_KEY` | Client certificate and key in PEM, for mutual TLS. Set both or neither. |

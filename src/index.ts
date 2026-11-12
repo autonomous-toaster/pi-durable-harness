@@ -87,7 +87,7 @@ Accepted for pi compatibility and not acted on:
 
 Environment:
   PI_DURABLE_DATABASE_URL        PostgreSQL URL; unset stores in SQLite
-  PI_DURABLE_PG_SCHEMA           schema for PostgreSQL sessions (default: harness)
+  PI_DURABLE_PG_SCHEMA           schema for PostgreSQL sessions (default: durable)
   PI_DURABLE_PG_SSL              disable, require, verify-ca, or verify-full
   PI_DURABLE_PG_SSL_CA           CA certificate in PEM, needed by verify-ca and verify-full
   PI_DURABLE_PG_SSL_CERT         client certificate in PEM, with PI_DURABLE_PG_SSL_KEY

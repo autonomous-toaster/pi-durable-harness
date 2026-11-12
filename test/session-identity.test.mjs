@@ -83,7 +83,7 @@ test("pi's session id rule is enforced", () => {
 test("the tenant defaults and can be named", () => {
 	assert.equal(resolveConfig([], {}, "/w").tenant, "default");
 	assert.equal(resolveConfig(["--tenant", "acme"], {}, "/w").tenant, "acme");
-	assert.equal(resolveConfig([], {}, "/w").schema, "harness");
+	assert.equal(resolveConfig([], {}, "/w").schema, "durable");
 	assert.equal(resolveConfig([], { PI_DURABLE_PG_SCHEMA: "custom" }, "/w").schema, "custom");
 });
 
