@@ -52,7 +52,8 @@ test("a client certificate needs its key, and a missing CA file is reported", ()
 });
 
 test("poolOptions carries the verified TLS settings", () => {
-	const options = poolOptions(url, { PI_DURABLE_PG_SSL: "verify-full", PI_DURABLE_PG_SSL_CA: caPath });
+	const env = { PI_DURABLE_PG_SSL: "verify-full", PI_DURABLE_PG_SSL_CA: caPath };
+	const options = poolOptions(url, resolveSsl({ url, env }));
 	assert.equal(options.connectionString, url);
 	assert.equal(options.enforce, true);
 	assert.equal(options.ssl.rejectUnauthorized, true);
@@ -60,13 +61,12 @@ test("poolOptions carries the verified TLS settings", () => {
 
 test("a pooler gets the server name, so Supavisor can find the tenant", () => {
 	const pooler = "postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres";
-	const options = poolOptions(pooler, { PI_DURABLE_PG_SSL: "verify-full", PI_DURABLE_PG_SSL_CA: caPath });
+	const env = { PI_DURABLE_PG_SSL: "verify-full", PI_DURABLE_PG_SSL_CA: caPath };
+	const options = poolOptions(pooler, resolveSsl({ url: pooler, env }));
 	assert.equal(options.ssl.servername, "aws-0-eu-west-3.pooler.supabase.com");
 	// An IP cannot be a TLS server name.
-	const byIp = poolOptions("postgres://postgres:pw@10.0.0.5:5432/postgres", {
-		PI_DURABLE_PG_SSL: "verify-full",
-		PI_DURABLE_PG_SSL_CA: caPath,
-	});
+	const ipUrl = "postgres://postgres:pw@10.0.0.5:5432/postgres";
+	const byIp = poolOptions(ipUrl, resolveSsl({ url: ipUrl, env }));
 	assert.equal(byIp.ssl.servername, undefined);
 });
 

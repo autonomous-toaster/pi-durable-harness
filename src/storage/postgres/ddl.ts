@@ -14,7 +14,6 @@
  *    parameter, as Durable's multi-row statements expect),
  *  - `json_extract(alias.value, '$[n]')` rewritten to `(alias.value #>> '{n}')`.
  */
-
 /** Rewrite `?` placeholders to `$n`, ignoring question marks inside string literals. */
 export function translatePlaceholders(sql: string): string {
 	let out = "";

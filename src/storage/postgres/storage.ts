@@ -9,6 +9,7 @@
 import type { Pool } from "pg";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { PostgresDatabase } from "./database.js";
+import type { Layout } from "./layout.js";
 
 export class SessionLockedError extends Error {
 	constructor(schema: string) {
@@ -23,6 +24,8 @@ export interface PostgresStorageOptions {
 	readonly schema: string;
 	/** Table prefix of one session inside that schema. */
 	readonly prefix: string;
+	/** `shared` keeps one table set for every session; `prefixed` gives each its own. */
+	readonly layout?: Layout;
 }
 
 /** Signed 64-bit advisory-lock key for a schema and session prefix (FNV-1a). */
@@ -37,7 +40,8 @@ export function advisoryKey(name: string): bigint {
 }
 
 export async function openPostgresStorage(options: PostgresStorageOptions): Promise<SqliteStorage> {
-	const database = await PostgresDatabase.open(options.pool, options.schema);
+	const layout = options.layout ?? "shared";
+	const database = await PostgresDatabase.open(options.pool, options.schema, { prefix: options.prefix, layout });
 	try {
 		if (!(await database.tryAdvisoryLock(advisoryKey(`${options.schema}\u0000${options.prefix}`)))) {
 			throw new SessionLockedError(`${options.schema}/${options.prefix}`);

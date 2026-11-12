@@ -110,8 +110,13 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			import("../storage/postgres/storage.js"),
 		]);
 		const { poolOptions, assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
-		const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl);
-		const pool: Pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }) });
+		const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl, config.pgSsl);
+		// The policy reads app.session; setting it at startup means every connection the
+		// pool opens is already scoped, not only the one the database grabs.
+		// The session GUC scopes the policy; the role is assumed by the setup statements,
+		// which must run as the connecting user to be allowed to create it.
+		const scope = config.pgLayout === "shared" ? { options: `-c app.session=${sessionPrefix(config.tenant, key)}` } : {};
+		const pool: Pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }), ...scope });
 		if (enforce) {
 			const probe = await pool.connect().catch(async (error: unknown) => {
 				const hint = connectionHint(connectionString, error);
@@ -130,6 +135,7 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			pool,
 			schema: config.schema,
 			prefix: sessionPrefix(config.tenant, key),
+			layout: config.pgLayout,
 		});
 		const stamp = () => stampSession(config, key);
 		await stamp().catch(() => {});

@@ -216,6 +216,7 @@ Environment variables:
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
 | `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `durable`). |
+| `PI_DURABLE_PG_LAYOUT` | `shared` (default) or `prefixed`. Shared keeps one table set for every session, scoped by a `session` column and row-level security; prefixed gives each session its own nine tables. |
 | `PI_DURABLE_PG_SSL` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a CA. |
 | `PI_DURABLE_PG_SSL_CA` | CA certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |
 | `PI_DURABLE_PG_SSL_CERT` / `PI_DURABLE_PG_SSL_KEY` | Client certificate and key in PEM, for mutual TLS. Set both or neither. |
@@ -266,7 +267,7 @@ Storage is selected by configuration and is invisible to the client.
 
 | Backend | When | Notes |
 | --- | --- | --- |
-| **PostgreSQL** | `PI_DURABLE_DATABASE_URL` set | One schema (`PI_DURABLE_PG_SCHEMA`) for every session, a table prefix per session, and a `harness_sessions` catalog holding `(tenant, cwd, session, last_used)` for `-c`. The `pg_advisory_lock` keys on schema and prefix, so two sessions open together and a second writer of one session is refused. |
+| **PostgreSQL** | `PI_DURABLE_DATABASE_URL` set | One schema (`PI_DURABLE_PG_SCHEMA`) and one table set for every session — a `session` column plus a row-level-security policy, run as the `durable_scope` role so the policy is not bypassed — and a `harness_sessions` catalog holding `(tenant, cwd, session, last_used)` for `-c`. The `pg_advisory_lock` keys on schema and prefix, so two sessions open together and a second writer of one session is refused. |
 | **SQLite** | default | One file per session at `<sessionDir>/<cwd>/<tenant>__<session>.sqlite`, via `node:sqlite`. The directory groups a working directory's sessions and the file's modification time answers `-c`. |
 | **Memory** | `--no-session` | Ephemeral. |
 

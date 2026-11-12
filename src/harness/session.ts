@@ -82,7 +82,7 @@ async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<voi
 async function withPool<T>(config: HarnessConfig, use: (client: pg.PoolClient) => Promise<T>): Promise<T | undefined> {
 	if (config.databaseUrl === undefined) return undefined;
 	const { poolOptions, assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
-	const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl);
+	const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl, config.pgSsl);
 	const pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }) });
 	const client = await pool.connect().catch(async (error: unknown) => {
 		// A swallowed connection error left the operator reading a bare driver message.

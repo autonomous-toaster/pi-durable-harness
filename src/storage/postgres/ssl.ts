@@ -148,12 +148,11 @@ export function missingTenant(url: string): string | undefined {
 	}
 }
 
-/** The pool options for a database URL under an environment, with TLS applied. */
+/** The pool options for a database URL and an already-resolved TLS decision. */
 export function poolOptions(
 	url: string,
-	env: Record<string, string | undefined> = process.env,
+	decision: SslDecision = resolveSsl({ url, env: process.env }),
 ): { readonly connectionString: string; readonly ssl?: SslDecision["ssl"]; readonly enforce: boolean } {
-	const decision = resolveSsl({ url, env });
 	// A pooler that identifies its tenant from SNI needs the name sent, and node only
 	// sends it when `ssl` is an object it can read a servername from.
 	const servername = decision.ssl?.servername ?? (decision.ssl === undefined ? undefined : hostnameOf(url));
