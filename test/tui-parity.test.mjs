@@ -49,8 +49,10 @@ test("pi's TUI boots on durable state, prompts, and renders pi's layout", { skip
 	assert.ok(!stdout.includes("MODE ERROR"), `the TUI ran: ${stderr.slice(-400)}`);
 	// The answer came back through durable, not from a fake.
 	assert.match(stdout, /answer: "[^"]+"/);
-	// pi's footer shows the model our adapter resolved, and pi's extension panel
-	// lists the extensions its own runner was given.
-	assert.match(stdout, /deepseek-v4\.1-flash:cloud/);
+	// pi's footer shows one resolved model — no "old -> new" arrow, which is what a
+	// bogus routedModel drew — and pi's extension panel lists its runner's set.
+	const footer = stdout.split("\n").find((line) => line.startsWith("FOOTER: ")) ?? "";
+	assert.match(footer, /\(\w[\w-]*\) \S+ •/, footer);
+	assert.doesNotMatch(footer, / → /, footer);
 	assert.match(stdout, /\[Extensions\]/);
 });

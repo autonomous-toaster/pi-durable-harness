@@ -60,7 +60,8 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	let entries: readonly unknown[] = [];
 	let messages: readonly unknown[] = [];
 	let idle = true;
-	let model: { provider: string; id: string; name?: string } | undefined;
+	// The registry's own model object, so pi's footer compares it like pi's own.
+	let model: Record<string, unknown> | undefined;
 	let extensionRunner: unknown;
 	let extensionBindings: unknown;
 
@@ -110,18 +111,40 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		entries = nextEntries;
 		messages = nextMessages;
 		idle = quiescent;
-		model = agent.model === undefined ? undefined : { provider: agent.model.provider, id: agent.model.modelId, name: agent.model.modelId };
+		const registry = options.modelRuntime as { getModel?: (provider: string, id: string) => Record<string, unknown> | undefined };
+		model =
+			agent.model === undefined
+				? undefined
+				: (registry.getModel?.(agent.model.provider, agent.model.modelId) ?? {
+						provider: agent.model.provider,
+						id: agent.model.modelId,
+						name: agent.model.modelId,
+					});
 	};
 
 	const startWatching = async (): Promise<void> => {
 		const stream = await engine.watchEvents();
 		const seen = new Set(entries.map((entry) => String((entry as { readonly id: unknown }).id)));
+		let wasRunning = false;
 		stream.start((call) => {
 			if (call.kind !== "value") return;
+			const live = call.value.docs["pi.live"] as { readonly run?: unknown } | undefined;
+			const running = live?.run !== undefined;
+			if (running !== wasRunning) {
+				wasRunning = running;
+				announce(running ? { type: "agent_start" } : { type: "agent_end", messages: [] });
+			}
 			const fresh = call.value.entries.filter((entry) => !seen.has(String(entry.id)));
 			for (const entry of fresh) {
 				seen.add(String(entry.id));
 				announce({ type: "entry_appended", entry: projectEntry(entry, null) });
+				// A message entry is announced as the message pair the TUI draws
+				// (pi's AgentSessionEvent carries the message, not the entry).
+				const message = (entry as { readonly model?: readonly unknown[] }).model?.[0];
+				if (message !== undefined) {
+					announce({ type: "message_start", message });
+					announce({ type: "message_end", message });
+				}
 				emitControl(entry);
 			}
 			void refresh();
@@ -161,8 +184,10 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		}
 	};
 
+	// pi's footer reads the model from `state`, not from `session.model`.
 	const sessionState = (): Record<string, unknown> => ({
 		messages,
+		...(model === undefined ? {} : { model }),
 		thinkingLevel: engine.currentThinkingLevel() ?? options.thinkingLevel,
 	});
 
@@ -239,8 +264,10 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		get model() {
 			return model;
 		},
+		// pi sets this only for a virtual model, which routes every request. Durable
+		// has none, and a value here makes the footer draw a bogus "old → new".
 		get routedModel() {
-			return model === undefined ? undefined : { model, thinkingLevel: engine.currentThinkingLevel() ?? options.thinkingLevel };
+			return undefined;
 		},
 		get agent() {
 			return { state: {} };

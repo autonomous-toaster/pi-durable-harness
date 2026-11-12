@@ -105,7 +105,9 @@ const plain = terminal.rendered
 	.replaceAll(/\x1b\][^\x07]*\x07/g, "")
 	.replaceAll(/\x1b_G[^\\]*\\/g, "");
 process.stdout.write(`\n--- recorded members (${asked.size}) ---\n${[...asked].sort().join("\n")}\n`);
+const footer = [...plain.matchAll(/\((litellm|ollama-cloud|mock)[^\n]*/g)].at(-1)?.[0]?.trim();
 process.stdout.write(`\nentries: ${entries.length}  answer: ${JSON.stringify(answer)}\n`);
+process.stdout.write(`FOOTER: ${footer ?? "(none)"}\n`);
 process.stdout.write(`\n--- rendered (plain, tail) ---\n${plain.slice(-2500)}\n`);
 if (result?.error !== undefined) process.stdout.write(`\nMODE ERROR: ${result.error?.stack ?? result.error}\n`);
 await engine.close().catch(() => {});
