@@ -120,17 +120,6 @@ function resolveTextOrFile(value: string): string {
 	return value;
 }
 
-const VALUE_FLAGS: Readonly<Record<string, keyof HarnessConfig | "mode">> = {
-	"--mode": "mode",
-	"--session-dir": "sessionDir",
-	"--provider": "provider",
-	"--model": "model",
-	"--thinking": "thinking",
-	"--tenant": "tenant",
-	"--name": "name",
-	"-n": "name",
-};
-
 export function resolveConfig(
 	argv: readonly string[],
 	env: Readonly<Record<string, string | undefined>>,
