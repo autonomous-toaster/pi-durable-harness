@@ -15,6 +15,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExtensionRuntime, ExtensionRunner, type Extension } from "@earendil-works/pi-coding-agent";
 import type { HarnessEngine } from "../engine.js";
 import { projectEntry } from "../projection.js";
+import { spawn } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { type SkillLike, type TemplateLike, expandPromptTemplate, expandSkillCommand } from "./slash.js";
 
@@ -24,6 +27,8 @@ type SessionEventListener = (event: unknown) => void;
 
 export interface TuiAdapterOptions {
 	readonly cwd: string;
+	/** pi's agent directory: the trust store and other per-install state live there. */
+	readonly agentDir?: string;
 	readonly sessionId: string;
 	readonly settingsManager: unknown;
 	readonly resourceLoader: unknown;
@@ -68,6 +73,13 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	let idle = true;
 	// The registry's own model object, so pi's footer compares it like pi's own.
 	let model: Record<string, unknown> | undefined;
+	let poller: ReturnType<typeof setInterval> | undefined;
+	let lastAssistant: string | undefined;
+	/** The models startup lists as "Model scope" and Ctrl+P cycles. */
+	let scoped: { model: Record<string, unknown>; thinkingLevel?: string }[] = [];
+	let bashProcess: ReturnType<typeof spawn> | undefined;
+	/** The session file pi prints and /session shows; the host names it by rule. */
+	const sessionFileOf = (): string | undefined => undefined;
 	let extensionRunner: unknown;
 	let extensionBindings: unknown;
 
@@ -131,6 +143,18 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		messages = nextMessages;
 		idle = quiescent;
 		const registry = options.modelRuntime as { getModel?: (provider: string, id: string) => Record<string, unknown> | undefined };
+		lastAssistant = (await engine.lastAssistantText?.()) ?? lastAssistant;
+		if (scoped.length === 0) {
+			// pi's header lists `enabledModels`, not every model with credentials.
+			const settings = options.settingsManager as { getEnabledModels?: () => readonly string[] };
+			const registry = options.modelRuntime as { getModel?: (provider: string, id: string) => Record<string, unknown> | undefined };
+			scoped = (settings.getEnabledModels?.() ?? []).flatMap((entry) => {
+				const slash = entry.indexOf("/");
+				if (slash === -1) return [];
+				const model = registry.getModel?.(entry.slice(0, slash), entry.slice(slash + 1));
+				return model === undefined ? [] : [{ model }];
+			});
+		}
 		model =
 			agent.model === undefined
 				? undefined
@@ -143,42 +167,69 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 
 	const startWatching = async (): Promise<void> => {
 		const stream = await engine.watchEvents();
+		// The durable stream is a hint: a revision it does not deliver would leave the
+		// transcript behind, so the view is also read on a timer.
 		const seen = new Set(entries.map((entry) => String((entry as { readonly id: unknown }).id)));
 		let wasRunning = false;
+		const apply = (view: {
+			readonly entries?: readonly unknown[];
+			readonly docs?: { readonly "pi.live"?: unknown };
+		}): void => {
+			try {
+				const live = view.docs?.["pi.live"] as
+					| { readonly run?: unknown; readonly generation?: unknown; readonly tools?: readonly Record<string, unknown>[] }
+					| undefined;
+				emitGeneration(live);
+				for (const slot of live?.tools ?? []) emitTool(view, slot);
+				const running = live?.run !== undefined;
+				if (running !== wasRunning) {
+					wasRunning = running;
+					announce(running ? { type: "agent_start" } : { type: "agent_end", messages: [] });
+				}
+				for (const entry of view.entries ?? []) {
+					if (seen.has(String((entry as { readonly id: unknown }).id))) continue;
+					seen.add(String((entry as { readonly id: unknown }).id));
+					announce({ type: "entry_appended", entry: projectEntry(entry as never, null) });
+					// A message entry is announced as the message pair the TUI draws
+					// (pi's AgentSessionEvent carries the message, not the entry).
+					const message = (entry as { readonly model?: readonly { readonly role?: string }[] }).model?.[0];
+					if (message !== undefined) {
+						noteToolCalls(message);
+						if (streaming !== undefined && message.role === "assistant") {
+							// The streamed message landed: finalize it, do not draw it twice.
+							streaming = undefined;
+							streamingJson = "";
+							announce({ type: "message_end", message });
+						} else {
+							announce({ type: "message_start", message });
+							// pi draws a call's row from message_update alone, so a committed
+							// message carrying calls is announced that way too.
+							if (hasToolCalls(message)) announce({ type: "message_update", message });
+							announce({ type: "message_end", message });
+						}
+					}
+					emitControl(entry as never);
+				}
+			} catch {
+				// One malformed view must not stop the transcript for the rest of the session.
+			}
+		};
+		const read = async (): Promise<void> => {
+			apply(await engine.view());
+			// The synchronous getters answer from this snapshot, so it is refreshed with
+			// every read; without it the footer counters and /session stats stay empty.
+			await refresh();
+		};
 		stream.start((call) => {
 			if (call.kind !== "value") return;
-			const live = call.value.docs["pi.live"] as
-				| { readonly run?: unknown; readonly generation?: unknown; readonly tools?: readonly Record<string, unknown>[] }
-				| undefined;
-			emitGeneration(live);
-			for (const slot of live?.tools ?? []) emitTool(call.value, slot);
-			const running = live?.run !== undefined;
-			if (running !== wasRunning) {
-				wasRunning = running;
-				announce(running ? { type: "agent_start" } : { type: "agent_end", messages: [] });
-			}
-			const fresh = call.value.entries.filter((entry) => !seen.has(String(entry.id)));
-			for (const entry of fresh) {
-				seen.add(String(entry.id));
-				announce({ type: "entry_appended", entry: projectEntry(entry, null) });
-				// A message entry is announced as the message pair the TUI draws
-				// (pi's AgentSessionEvent carries the message, not the entry).
-				const message = (entry as { readonly model?: readonly { readonly role?: string }[] }).model?.[0];
-				if (message !== undefined) {
-					if (streaming !== undefined && message.role === "assistant") {
-						// The streamed message landed: finalize it, do not draw it twice.
-						streaming = undefined;
-						streamingJson = "";
-						announce({ type: "message_end", message });
-					} else {
-						announce({ type: "message_start", message });
-						announce({ type: "message_end", message });
-					}
-				}
-				emitControl(entry);
-			}
-			void refresh();
+			apply(call.value);
+			void read().catch(() => {});
 		});
+		poller = setInterval(() => {
+			void read().catch(() => {});
+		}, 200);
+		// The view poll must never be what keeps the process alive.
+		poller.unref?.();
 	};
 
 	/** pi's own runner, so extension rows, commands, and shortcuts are real (task 6.1). */
@@ -200,6 +251,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 
 	/** The arguments of a model-issued call, from its assistant entry. */
 	const toolArgs = (callId: string): unknown => {
+		for (const block of (partial?.content as readonly { readonly type?: string; readonly id?: string; readonly arguments?: unknown }[] | undefined) ?? []) {
+			if (block.type === "toolCall" && block.id === callId) return block.arguments;
+		}
 		for (const entry of entries) {
 			const message = (entry as { readonly model?: readonly { readonly content?: readonly { readonly type?: string; readonly id?: string; readonly arguments?: unknown }[] }[] }).model?.[0];
 			for (const block of message?.content ?? []) {
@@ -210,9 +264,25 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	};
 
 	/** Announce one tool slot as the start/update/end the TUI draws (task 5.1). */
+	const hasToolCalls = (message: unknown): boolean =>
+		((message as { readonly content?: unknown })?.content as readonly { readonly type?: string }[] | undefined)?.some?.(
+			(block) => block.type === "toolCall",
+		) === true;
+
+	/** Call ids whose row pi has already been given, from a message it draws. */
+	const rowsCreated = new Set<string>();
+	const noteToolCalls = (message: unknown): void => {
+		for (const block of ((message as { readonly content?: unknown })?.content as readonly { readonly type?: string; readonly id?: string }[] | undefined) ?? []) {
+			if (block.type === "toolCall" && block.id !== undefined) rowsCreated.add(block.id);
+		}
+	};
+
 	const startedTools = new Set<string>();
+	const finishedTools = new Set<string>();
 	// The generation's committed partial, and the calls its message already shows.
 	let streaming: Record<string, unknown> | undefined;
+	/** The newest in-flight assistant message: the only place a running call's arguments exist. */
+	let partial: Record<string, unknown> | undefined;
 	let streamingJson = "";
 	const callsInGeneration = new Set<string>();
 
@@ -223,11 +293,16 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		for (const block of (message.content as readonly { readonly type?: string; readonly id?: string }[] | undefined) ?? []) {
 			if (block.type === "toolCall" && block.id !== undefined) callsInGeneration.add(block.id);
 		}
+		partial = message;
 		const json = JSON.stringify(message);
 		if (streaming === undefined) {
 			streaming = message;
 			streamingJson = json;
+			// pi builds a tool row from message_update, not message_start, so the first
+			// partial is announced both ways: without it a call draws with no arguments.
+			noteToolCalls(message);
 			announce({ type: "message_start", message });
+			announce({ type: "message_update", message });
 			return;
 		}
 		if (json !== streamingJson) {
@@ -236,15 +311,17 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		}
 	};
 	const emitTool = (view: { readonly entries?: readonly unknown[] }, slot: Record<string, unknown>): void => {
+		// The durable call id is the model's own, so pi keys the row and the slot alike.
 		const callId = String(slot.callId);
 		const name = String(slot.name ?? "");
 		const status = slot.status;
 		if (status === "pending" || status === "running") {
-			// The TUI builds the row from the assistant's toolCall block, so wait for it
-			// rather than draw a row with no arguments.
-			if (!startedTools.has(callId) && !callsInGeneration.has(callId) && toolArgs(callId) === undefined) return;
 			if (!startedTools.has(callId)) {
+				// The row exists only once a message carrying the call was drawn; starting
+				// it earlier gives pi a row with no arguments.
+				if (!rowsCreated.has(callId)) return;
 				startedTools.add(callId);
+				finishedTools.delete(callId);
 				announce({ type: "tool_execution_start", toolCallId: callId, toolName: name, args: toolArgs(callId) });
 			}
 			if (typeof slot.output === "string" && slot.output.length > 0) {
@@ -257,7 +334,16 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			}
 			return;
 		}
-		if (status === "done" && startedTools.delete(callId)) {
+		if (status === "done") {
+			// The view is polled, so a settled call is announced exactly once.
+			if (finishedTools.has(callId)) return;
+			finishedTools.add(callId);
+			startedTools.delete(callId);
+			// A call whose row exists is only settled; one that never showed still needs
+			// a row to settle, built from the committed entry's arguments.
+			if (!rowsCreated.has(callId)) {
+				announce({ type: "tool_execution_start", toolCallId: callId, toolName: name, args: toolArgs(callId) });
+			}
 			const result = (view.entries ?? [])
 				.map((entry) => (entry as { readonly id?: unknown; readonly model?: readonly Record<string, unknown>[] }))
 				.find((entry) => String(entry.id) === String(slot.entry))
@@ -343,8 +429,171 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			return engine.currentThinkingLevel() ?? options.thinkingLevel;
 		},
 		get scopedModels() {
-			return [];
+			return scoped;
 		},
+		// --- the rest of pi's AgentSession surface (tools/tui-surface.mjs lists it) ---
+
+		/** pi's /session aggregates usage over every entry, compacted history included. */
+		getSessionStats() {
+			const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+			const add = (usage: Record<string, number> | undefined): void => {
+				if (usage === undefined) return;
+				totals.input += usage.input ?? 0;
+				totals.output += usage.output ?? 0;
+				totals.cacheRead += usage.cacheRead ?? 0;
+				totals.cacheWrite += usage.cacheWrite ?? 0;
+				totals.cost += (usage as { cost?: { total?: number } }).cost?.total ?? 0;
+			};
+			let userMessages = 0;
+			let assistantMessages = 0;
+			let toolResults = 0;
+			let totalMessages = 0;
+			let toolCalls = 0;
+			// Usage rides on the messages, not on the durable entry records.
+			for (const message of messages as readonly Record<string, unknown>[]) {
+				if (message === undefined) continue;
+				totalMessages++;
+				if (message.role === "user") userMessages++;
+				else if (message.role === "toolResult") {
+					toolResults++;
+					add(message.usage as Record<string, number> | undefined);
+				} else if (message.role === "assistant") {
+					assistantMessages++;
+					const content = message.content;
+					if (Array.isArray(content)) toolCalls += content.filter((part) => (part as { type?: string }).type === "toolCall").length;
+					add(message.usage as Record<string, number> | undefined);
+				}
+			}
+			return {
+				sessionFile: options.persisted === false ? undefined : sessionFileOf(),
+				sessionId: options.sessionId,
+				userMessages,
+				assistantMessages,
+				toolCalls,
+				toolResults,
+				totalMessages,
+				tokens: {
+					input: totals.input,
+					output: totals.output,
+					cacheRead: totals.cacheRead,
+					cacheWrite: totals.cacheWrite,
+					total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
+				},
+				cost: totals.cost,
+				contextUsage: undefined,
+			};
+		},
+		/** pi's fork picker lists the prompts a user could fork from. */
+		getUserMessagesForForking() {
+			const result: { entryId: string; text: string }[] = [];
+			for (const entry of entries) {
+				const message = (entry as { readonly id: unknown; readonly model?: readonly Record<string, unknown>[] }).model?.[0];
+				if (message?.role !== "user") continue;
+				const content = message.content;
+				const text = typeof content === "string" ? content : Array.isArray(content) ? content.flatMap((part) => ((part as { type?: string }).type === "text" ? [(part as { text?: string }).text ?? ""] : [])).join("") : "";
+				if (text.length > 0) result.push({ entryId: String((entry as { readonly id: unknown }).id), text });
+			}
+			return result;
+		},
+		getLastAssistantText: () => lastAssistant,
+		get pendingMessageCount() {
+			return 0;
+		},
+		async waitForIdle() {
+			while (!(await engine.isQuiescent())) await new Promise((resolve) => setTimeout(resolve, 100));
+		},
+		get systemPrompt() {
+			const loader = options.resourceLoader as { getSystemPrompt?: () => string | undefined };
+			return loader.getSystemPrompt?.() ?? "";
+		},
+		get steeringMode() {
+			return (options.settingsManager as { getSteeringMode?: () => string }).getSteeringMode?.() ?? "interrupt";
+		},
+		get followUpMode() {
+			return (options.settingsManager as { getFollowUpMode?: () => string }).getFollowUpMode?.() ?? "queue";
+		},
+		setSteeringMode(mode: string) {
+			(options.settingsManager as { setSteeringMode?: (mode: string) => void }).setSteeringMode?.(mode);
+		},
+		setFollowUpMode(mode: string) {
+			(options.settingsManager as { setFollowUpMode?: (mode: string) => void }).setFollowUpMode?.(mode);
+		},
+		setSessionName(name: string) {
+			void engine.appendControl({ type: "session_info", name } as never);
+		},
+		setAutoCompactionEnabled(enabled: boolean) {
+			(options.settingsManager as { setAutoCompact?: (enabled: boolean) => void }).setAutoCompact?.(enabled);
+		},
+		setCacheWarmingMode(mode: string) {
+			(options.settingsManager as { setCacheWarmingMode?: (mode: string) => void }).setCacheWarmingMode?.(mode);
+		},
+		get cacheWarmingStatus() {
+			return undefined;
+		},
+		/** Durable compacts through its own task; the TUI only needs to ask. */
+		async compact() {
+			await engine.compact?.(undefined as never);
+		},
+		abortCompaction: () => undefined,
+		abortBranchSummary: () => undefined,
+		abortRetry: () => undefined,
+		async reload() {
+			const loader = options.resourceLoader as { reload?: (options: unknown) => Promise<void> };
+			await loader.reload?.({ resolveProjectTrust: async () => false });
+			await refresh();
+		},
+		async exportToHtml() {
+			return engine.exportHtml();
+		},
+		exportToJsonl() {
+			return entries.map((entry) => JSON.stringify(projectEntry(entry as never, null))).join("\n");
+		},
+		async cycleModel() {
+			const models = (await engine.availableModels?.()) ?? [];
+			if (models.length === 0) return false;
+			const current = (await engine.resolvedAgent()).model;
+			const index = models.findIndex((model) => model.provider === current?.provider && model.id === current?.modelId);
+			const next = models[(index + 1) % models.length];
+			if (next === undefined) return false;
+			await engine.configure({ model: { provider: next.provider, modelId: next.id } });
+			await refresh();
+			return true;
+		},
+		async cycleThinkingLevel() {
+			const capability = engine as unknown as { getAvailableThinkingLevels?: () => readonly string[] };
+			const levels = capability.getAvailableThinkingLevels?.() ?? ["off", "low", "medium", "high"];
+			const current = engine.currentThinkingLevel() ?? "off";
+			const next = levels[(levels.indexOf(current) + 1) % levels.length];
+			await engine.configure({ thinkingLevel: next } as never);
+			await refresh();
+			return next;
+		},
+		/** The TUI's `!command` runs in the session's cwd, as pi's does. */
+		async executeBash(command: string, onChunk?: (chunk: string) => void) {
+			const settings = options.settingsManager as { getShellPath?: () => string | undefined; getShellCommandPrefix?: () => string | undefined };
+			const shell = settings.getShellPath?.() ?? process.env.SHELL ?? "/bin/sh";
+			const prefix = settings.getShellCommandPrefix?.();
+			const script = prefix === undefined ? command : `${prefix}\n${command}`;
+			const child = spawn(shell, ["-c", script], { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+			bashProcess = child;
+			let output = "";
+			const collect = (chunk: Buffer): void => {
+				const text = chunk.toString();
+				output += text;
+				onChunk?.(text);
+			};
+			child.stdout?.on("data", collect);
+			child.stderr?.on("data", collect);
+			const exitCode = await new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 0)));
+			bashProcess = undefined;
+			return { output, exitCode };
+		},
+		abortBash() {
+			bashProcess?.kill();
+			bashProcess = undefined;
+		},
+		recordBashResult: () => undefined,
+
 		// pi's loader owns the prompt templates; the TUI turns each into a `/name`
 		// command and expands it, so an empty list makes every `/name` a raw prompt.
 		get promptTemplates() {
@@ -393,12 +642,23 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		setModel: (model: { provider: string; id: string }) =>
 			engine.configure({ model: { provider: model.provider, modelId: model.id } } as never),
 		setThinkingLevel: (level: string) => engine.configure({ thinkingLevel: level } as never),
-		setScopedModels: () => undefined,
-		prompt: (text: string, submitOptions?: { readonly expandPromptTemplates?: boolean }) =>
-			engine.submit(submitOptions?.expandPromptTemplates === false ? text : expand(text)),
-		steer: (text: string) => engine.submit(expand(text), "steer"),
-		followUp: (text: string) => engine.submit(expand(text), "followUp"),
-		sendUserMessage: (content: string) => engine.submit(content),
+		setScopedModels: (models: { model: Record<string, unknown>; thinkingLevel?: string }[]) => {
+			scoped = models;
+		},
+		// pi's prompt() resolves when the run settles, and that await is what drives the
+		// durable run: a dropped submission leaves it pending at turn 0.
+		prompt: async (text: string, submitOptions?: { readonly expandPromptTemplates?: boolean }) => {
+			await engine.submitAndWait(submitOptions?.expandPromptTemplates === false ? text : expand(text));
+		},
+		steer: async (text: string) => {
+			await engine.submitAndWait(expand(text), "steer");
+		},
+		followUp: async (text: string) => {
+			await engine.submitAndWait(expand(text), "followUp");
+		},
+		sendUserMessage: async (content: string) => {
+			await engine.submitAndWait(content);
+		},
 		sendCustomMessage: () => undefined,
 		abort: () => engine.abort(),
 		clearQueue: () => undefined,
@@ -419,10 +679,15 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		dispose: () => undefined,
+		dispose: async () => {
+			if (poller !== undefined) clearInterval(poller);
+			poller = undefined;
+		},
 	};
 
 	const services: Record<string, unknown> = {
+		// /trust builds a ProjectTrustStore from this, so an undefined path crashes it.
+		agentDir: options.agentDir ?? join(homedir(), ".pi", "agent"),
 		settingsManager: options.settingsManager,
 		resourceLoader: options.resourceLoader,
 		modelRuntime: options.modelRuntime,

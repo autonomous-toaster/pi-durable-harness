@@ -36,6 +36,11 @@ function fakeEngine() {
 			calls.submit.push({ content, whenBusy });
 			return { id: 1 };
 		},
+		// A submission is awaited, as pi's own prompt() awaits the run.
+		submitAndWait: async (content, whenBusy) => {
+			calls.submit.push({ content, whenBusy });
+			return true;
+		},
 		abort: async () => {
 			calls.aborted += 1;
 		},

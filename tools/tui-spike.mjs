@@ -86,16 +86,25 @@ const terminal = new HeadlessTerminal();
 const mode = new InteractiveMode(recording(runtime, "runtime"), { terminal, verbose: false });
 const running = mode.run().catch((error) => ({ error }));
 
+const settle = async () => {
+	for (let attempt = 0; attempt < 120; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		if (await engine.isQuiescent()) break;
+	}
+	await new Promise((resolve) => setTimeout(resolve, 1500));
+};
+
 await new Promise((resolve) => setTimeout(resolve, 1500));
 terminal.type(PROMPT);
 terminal.type("\r");
+await settle();
 
-// Wait for the run to settle, then render again.
-for (let attempt = 0; attempt < 120; attempt += 1) {
-	await new Promise((resolve) => setTimeout(resolve, 500));
-	if (await engine.isQuiescent()) break;
+// A second prompt, so a tool row can be checked as well when one is given.
+if (process.env.TUI_SPIKE_TOOL_PROMPT !== undefined) {
+	terminal.type(process.env.TUI_SPIKE_TOOL_PROMPT);
+	terminal.type("\r");
+	await settle();
 }
-await new Promise((resolve) => setTimeout(resolve, 1500));
 
 const result = await Promise.race([running, Promise.resolve(undefined)]);
 const entries = await engine.entries();
@@ -109,6 +118,7 @@ const footer = [...plain.matchAll(/\((litellm|ollama-cloud|mock)[^\n]*/g)].at(-1
 process.stdout.write(`\nentries: ${entries.length}  answer: ${JSON.stringify(answer)}\n`);
 process.stdout.write(`FOOTER: ${footer ?? "(none)"}\n`);
 process.stdout.write(`\n--- rendered (plain, tail) ---\n${plain.slice(-2500)}\n`);
+process.stdout.write(`\nTOOL ROWS: ${(plain.match(/\$ \S*/g) ?? []).join(" | ")}\n`);
 if (result?.error !== undefined) process.stdout.write(`\nMODE ERROR: ${result.error?.stack ?? result.error}\n`);
 await engine.close().catch(() => {});
 process.exit(0);

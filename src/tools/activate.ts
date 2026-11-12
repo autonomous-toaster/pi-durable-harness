@@ -20,11 +20,13 @@ export function computeActivation(
 	servers: readonly ResolvedServer[],
 	autoEnableCodemode: boolean,
 	defaultTools: readonly string[],
+	codemodeMode: "on" | "only" = "on",
 ): Activation {
 	const forces = (name: string): boolean => defaultTools.includes(`+${name}`);
 	const reachesCodemode = servers.some((server) => serverReaches(server).codemode);
 	const reachesToolSearch = servers.some((server) => serverReaches(server).toolSearch);
-	const codemode = forces("codemode") || (reachesCodemode && autoEnableCodemode);
+	// `codemode.mode: "only"` presents every tool through codemode, so it is always active.
+	const codemode = codemodeMode === "only" || forces("codemode") || (reachesCodemode && autoEnableCodemode);
 	const toolSearch = forces("tool_search") || reachesToolSearch;
 	const warnings: string[] = [];
 	if (reachesCodemode && !codemode) warnings.push("MCP tools need codemode, which is not active");
@@ -57,6 +59,7 @@ export function computeDeclaredTools(
 	allTools: readonly ToolRegistration[],
 	activation: Activation,
 	defaultTools: readonly string[] = [],
+	codemodeMode: "on" | "only" = "on",
 ): ToolRegistration[] {
 	const added = new Set(defaultTools.filter((name) => name.startsWith("+")).map((name) => name.slice(1)));
 	const removed = new Set(defaultTools.filter((name) => name.startsWith("-")).map((name) => name.slice(1)));
@@ -67,6 +70,8 @@ export function computeDeclaredTools(
 			if (removed.has(name)) return false;
 			if (name === "codemode") return activation.codemode;
 			if (name === "tool_search") return activation.toolSearch;
+			// pi's "only" declares no direct tool: every tool is reached through codemode.
+			if (codemodeMode === "only" && activation.codemode) return false;
 			if (isMcpTool(name)) return declaredByDefault(name);
 			return DEFAULT_ACTIVE.has(name);
 		})

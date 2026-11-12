@@ -320,6 +320,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 			const { runTui } = await import("./harness/tui/run.js");
 			await runTui(engine, {
 				cwd: config.cwd,
+				agentDir: config.agentDir,
 				sessionId: key,
 				settingsManager,
 				resourceLoader,

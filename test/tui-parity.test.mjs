@@ -45,6 +45,8 @@ test("pi's TUI boots on durable state, prompts, and renders pi's layout", { skip
 		TEST_LIVE_PROVIDER: process.env.TEST_LIVE_PROVIDER ?? "ollama-cloud",
 		TEST_LIVE_MODEL_ID: process.env.TEST_LIVE_MODEL_ID ?? "deepseek-v4.1-flash:cloud",
 		TUI_SPIKE_PROMPT: "Reply with exactly: ok",
+		// A call, so the tool row is checked on the rendered screen too.
+		TUI_SPIKE_TOOL_PROMPT: "Call the bash tool with command: printf parity",
 	});
 	assert.ok(!stdout.includes("MODE ERROR"), `the TUI ran: ${stderr.slice(-400)}`);
 	// The answer came back through durable, not from a fake.
@@ -55,4 +57,9 @@ test("pi's TUI boots on durable state, prompts, and renders pi's layout", { skip
 	assert.match(footer, /\(\w[\w-]*\) \S+ •/, footer);
 	assert.doesNotMatch(footer, / → /, footer);
 	assert.match(stdout, /\[Extensions\]/);
+	// The call drew one row, with its arguments and its output. A row without
+	// arguments ("$ ...") is what a tool event landing before the message produces.
+	const rows = stdout.split("\n").find((line) => line.startsWith("TOOL ROWS: ")) ?? "";
+	assert.match(rows, /\$ printf parity/, rows);
+	assert.doesNotMatch(rows, /\$ \.\.\./, rows);
 });

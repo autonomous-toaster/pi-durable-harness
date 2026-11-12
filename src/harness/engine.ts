@@ -214,10 +214,13 @@ export class HarnessEngine {
 
 			// Activation (task 2.2) and the explicit declared set (task 2.1).
 			const defaultTools = (settingsManager.getSettings().defaultTools ?? []) as readonly string[];
+			// pi's codemode setting decides what is declared: "only" exposes no direct tool.
+			const codemodeMode = ((settingsManager.getSettings() as { codemode?: { mode?: string } }).codemode?.mode ?? "on") as "on" | "only";
 			const activation = computeActivation(
 				options.mcp?.settings.servers ?? [],
 				options.mcp?.settings.autoEnableCodemode ?? true,
 				defaultTools,
+				codemodeMode,
 			);
 			for (const warning of activation.warnings) process.stderr.write(`pi-durable-harness: ${warning}\n`);
 			const declared = computeDeclaredTools(
@@ -226,6 +229,7 @@ export class HarnessEngine {
 				).map((entry) => entry.tool),
 				activation,
 				defaultTools,
+				codemodeMode,
 			);
 			if (activation.codemode) for (const tool of declared) appendCodemodeLine(tool);
 			if (activation.codemode) {
@@ -237,11 +241,11 @@ export class HarnessEngine {
 						.filter((entry) => entry.exposure === "codemode" || entry.exposure === "codemode-deferred" || entry.exposure === "deferred")
 						.map((entry) => entry.name),
 				);
-				const declaredNames = new Set(declared.map((tool) => tool.name));
-				void declaredNames;
-				await configureCodemodeDescription(
-					entryTools.filter((entry) => indirect.has(entry.tool.name)).map((entry) => entry.tool),
-				);
+				// "only" lists every tool codemode can reach; otherwise only the indirect ones.
+				const callable = codemodeMode === "only"
+					? entryTools.filter((entry) => entry.tool.name !== "codemode" && entry.tool.name !== "tool_search").map((entry) => entry.tool)
+					: entryTools.filter((entry) => indirect.has(entry.tool.name)).map((entry) => entry.tool);
+				await configureCodemodeDescription(callable);
 			}
 			const envs = new ExecutionEnvs(config.cwd);
 			const harness = await Harness.open(
@@ -446,8 +450,10 @@ export class HarnessEngine {
 	}
 
 	/** Submit one prompt and resolve to whether it was answered (task 2.2). */
-	async submitAndWait(content: string | readonly unknown[]): Promise<boolean> {
-		const settled = await (await this.submit(content)).wait(CONTEXT);
+	async submitAndWait(content: string | readonly unknown[], whenBusy?: "steer" | "followUp"): Promise<boolean> {
+		// Awaiting the submission is what advances the run; pi's own prompt() does too.
+		const submission = await this.submit(content, whenBusy);
+		const settled = await submission.wait(CONTEXT);
 		// A run ended, so this session is the most recently used one (task 2.3).
 		this.markActivity();
 		return settled.status === "done";
