@@ -45,6 +45,8 @@ export interface HarnessConfig {
 	readonly databaseUrl: string | undefined;
 	/** How the PostgreSQL tables are laid out: one set per session, or one shared set. */
 	readonly pgLayout: "shared" | "prefixed";
+	/** Continue even though another process holds the session (--take-over). */
+	readonly takeOver: boolean;
 	/** TLS for the database, resolved once so a bad certificate setup fails at startup. */
 	readonly pgSsl: import("../storage/postgres/ssl.js").SslDecision | undefined;
 	/** `--system-prompt`: replaces the built-in preamble. */
@@ -88,6 +90,7 @@ const OPTIONS = {
 	"append-system-prompt": { type: "string", multiple: true },
 	continue: { type: "boolean", short: "c" },
 	"no-session": { type: "boolean" },
+	"take-over": { type: "boolean" },
 	print: { type: "boolean", short: "p" },
 	offline: { type: "boolean" },
 	help: { type: "boolean", short: "h" },
@@ -241,6 +244,7 @@ export function resolveConfig(
 		databaseUrl: env.PI_DURABLE_DATABASE_URL,
 		pgSsl: env.PI_DURABLE_DATABASE_URL === undefined ? undefined : resolveSsl({ url: env.PI_DURABLE_DATABASE_URL, env }),
 		pgLayout: env.PI_DURABLE_PG_LAYOUT === "prefixed" ? "prefixed" : "shared",
+		takeOver: flag("take-over") || env.PI_DURABLE_PG_TAKE_OVER === "1",
 		systemPrompt,
 		appendSystemPrompt,
 		skillPaths: list("skill"),

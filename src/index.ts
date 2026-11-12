@@ -81,6 +81,7 @@ Prompt:
 Other:
   -h, --help            this text
   --offline             no network activity
+  --take-over           continue even though another process holds the session
 
 Accepted for pi compatibility and not acted on:
   --export, --theme
@@ -303,7 +304,11 @@ export async function main(argv: readonly string[]): Promise<void> {
 	const mcp = await loadMcpTools(config.agentDir, config.cwd, registeredMcp);
 
 	const extraExtensions = mcp.tools.length === 0 ? [...translated] : [{ name: "harness.mcp", tools: mcp.tools }, ...translated];
-	const engine = await HarnessEngine.open({
+	// A session another process holds cannot be written; say so and stop rather than
+	// hang on a pool that outlived the failure.
+	let opened: HarnessEngine;
+	try {
+		opened = await HarnessEngine.open({
 		config,
 		key,
 		modelRuntime,
@@ -313,8 +318,29 @@ export async function main(argv: readonly string[]): Promise<void> {
 		mcp: { entries: mcp.entries, settings: mcp.settings },
 		...(cliModel.model === undefined ? {} : { resolvedModel: cliModel.model }),
 		...(cliModel.thinkingLevel === undefined ? {} : { resolvedThinking: cliModel.thinkingLevel }),
-		...(scope === undefined ? {} : { modelScope: scope.scopedModels }),
-	});
+			...(scope === undefined ? {} : { modelScope: scope.scopedModels }),
+		});
+	} catch (error) {
+		if ((error as { name?: string } | undefined)?.name === "SessionLockedError") {
+			const held = error instanceof Error ? error.message.replace(/^Session is already open in another process: /, "") : "this session";
+			process.stderr.write(
+				[
+					`pi-durable-harness: ${held} is open in another process, so this one cannot write to it.`,
+					"  Continue somewhere else:  node dist/cli.js            (a new session)",
+					"  Or name one:              node dist/cli.js --session-id <id>",
+					"  Or, if that process is gone and its connection lingers: --take-over",
+					"",
+				].join("\n"),
+			);
+			// Nothing else was opened, but the MCP servers are: leaving them running is
+			// what makes the process hang after saying the session is taken.
+			await mcp.close().catch(() => {});
+			process.exitCode = 2;
+			return;
+		}
+		throw error;
+	}
+	const engine = opened;
 
 	// One snapshot and one context shape serve commands, session handlers, tools,
 	// and the event bus (tasks 5.1-5.3).

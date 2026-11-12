@@ -60,3 +60,10 @@ test("the prefixed layout leaves every statement alone", async () => {
 	const sql = "CREATE TABLE s_1a2b3c4d5e6f_entries ( id BIGINT PRIMARY KEY )";
 	assert.deepEqual(await applyLayout(sql, { prefix, layout: "prefixed" }), { sql, after: [] });
 });
+
+test("a held session is refused, and --take-over is the only way past it", async () => {
+	const { resolveConfig } = await import("../dist/harness/config.js");
+	assert.equal(resolveConfig([], {}, "/w").takeOver, false);
+	assert.equal(resolveConfig(["--take-over"], {}, "/w").takeOver, true);
+	assert.equal(resolveConfig([], { PI_DURABLE_PG_TAKE_OVER: "1" }, "/w").takeOver, true);
+});

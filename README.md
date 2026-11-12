@@ -216,6 +216,7 @@ Environment variables:
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
 | `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `durable`). |
+| `PI_DURABLE_PG_TAKE_OVER` | `1` continues even though another process holds the session (same as `--take-over`). |
 | `PI_DURABLE_PG_LAYOUT` | `shared` (default) or `prefixed`. Shared keeps one table set for every session, scoped by a `session` column and row-level security; prefixed gives each session its own nine tables. |
 | `PI_DURABLE_PG_SSL` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a CA. |
 | `PI_DURABLE_PG_SSL_CA` | CA certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |

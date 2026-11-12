@@ -26,6 +26,11 @@ export interface PostgresStorageOptions {
 	readonly prefix: string;
 	/** `shared` keeps one table set for every session; `prefixed` gives each its own. */
 	readonly layout?: Layout;
+	/**
+	 * Continue even though another process holds the session. The lock exists only
+	 * while its holder is connected, so this steals a *live* session on purpose.
+	 */
+	readonly takeOver?: boolean;
 }
 
 /** Signed 64-bit advisory-lock key for a schema and session prefix (FNV-1a). */
@@ -44,7 +49,10 @@ export async function openPostgresStorage(options: PostgresStorageOptions): Prom
 	const database = await PostgresDatabase.open(options.pool, options.schema, { prefix: options.prefix, layout });
 	try {
 		if (!(await database.tryAdvisoryLock(advisoryKey(`${options.schema}\u0000${options.prefix}`)))) {
-			throw new SessionLockedError(`${options.schema}/${options.prefix}`);
+			if (options.takeOver !== true) throw new SessionLockedError(`${options.schema}/${options.prefix}`);
+			process.stderr.write(
+				`pi-durable-harness: another process holds ${options.schema}/${options.prefix}; continuing without the lock, its writes will fail\n`,
+			);
 		}
 		// The prefix keeps each session's table set apart inside the shared schema.
 		return await SqliteStorage.open(database, { prefix: options.prefix });

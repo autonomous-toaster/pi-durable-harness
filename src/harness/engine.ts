@@ -136,6 +136,11 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			schema: config.schema,
 			prefix: sessionPrefix(config.tenant, key),
 			layout: config.pgLayout,
+			...(config.takeOver ? { takeOver: true } : {}),
+		}).catch(async (error: unknown) => {
+			// The pool would keep the process alive after the failure is reported.
+			await pool.end().catch(() => {});
+			throw error;
 		});
 		const stamp = () => stampSession(config, key);
 		await stamp().catch(() => {});
