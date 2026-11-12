@@ -122,17 +122,18 @@ export function connectionHint(url: string, error: unknown): string | undefined 
 	if (!/ENOIDENTIFIER|no tenant identifier|sni_hostname/i.test(message)) return undefined;
 	const host = hostnameOf(url) ?? "the pooler host";
 	return [
-		`${host} is a pooler that identifies the tenant from the username or the TLS server name.`,
-		"Use the project-scoped user (postgres.<project-ref>) in the URL, or set",
-		`PI_DURABLE_PG_SSL_SERVERNAME=db.<project-ref>.supabase.co so the name is sent.`,
+		`${host} resolves the tenant from the user name only: use postgres.<project-ref>.`,
+		"PI_DURABLE_PG_SSL_SERVERNAME does not help here; measured against this pooler,",
+		"a server name alone is still answered with ENOIDENTIFIER.",
 	].join(" ");
 }
 
 /**
  * The tenant a pooler will ask for, when the URL does not name one. Supavisor's
- * shared pooler needs `postgres.<project-ref>`; a bare `postgres` user and no
- * server name is answered with ENOIDENTIFIER after a round trip, so it is worth
- * saying before the connection is attempted.
+ * shared pooler resolves it from `postgres.<project-ref>`; measured against it, a
+ * TLS server name alone is still answered with ENOIDENTIFIER, so only the user
+ * name is offered as the fix. Said before connecting, since the pooler's own
+ * answer names neither the cause nor the remedy.
  */
 export function missingTenant(url: string): string | undefined {
 	try {
@@ -141,7 +142,7 @@ export function missingTenant(url: string): string | undefined {
 		if (!isPooler) return undefined;
 		const user = decodeURIComponent(parsed.username);
 		if (user.includes(".")) return undefined;
-		return `the pooler at ${parsed.hostname} needs a tenant: use postgres.<project-ref> as the user, or set PI_DURABLE_PG_SSL_SERVERNAME=db.<project-ref>.supabase.co`;
+		return `the pooler at ${parsed.hostname} needs a tenant in the user name: postgres.<project-ref> (a TLS server name alone is not enough)`;
 	} catch {
 		return undefined;
 	}

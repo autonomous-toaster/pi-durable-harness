@@ -74,7 +74,8 @@ test("ENOIDENTIFIER is explained rather than echoed", async () => {
 	const { connectionHint } = await import("../dist/storage/postgres/ssl.js");
 	const hint = connectionHint("postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres", new Error("(ENOIDENTIFIER) no tenant identifier provided"));
 	assert.match(hint, /postgres\.<project-ref>/);
-	assert.match(hint, /PI_DURABLE_PG_SSL_SERVERNAME/);
+	// Measured: the pooler ignores the server name for tenant resolution.
+	assert.match(hint, /SERVERNAME does not help/);
 	assert.equal(connectionHint(url, new Error("connection refused")), undefined);
 });
 
@@ -83,6 +84,11 @@ test("a pooler URL without a tenant says so before connecting", async () => {
 	assert.match(
 		missingTenant("postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"),
 		/postgres\.<project-ref>/,
+	);
+	// A server name does not satisfy the pooler, so it must not silence the warning.
+	assert.match(
+		missingTenant("postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"),
+		/not enough/,
 	);
 	// Already scoped, or not a pooler: nothing to say.
 	assert.equal(missingTenant("postgres://postgres.abcdefgh:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"), undefined);
