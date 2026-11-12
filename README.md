@@ -200,6 +200,9 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `--prompt-template <path>` | Load a prompt template file or directory (repeatable) |
 | `--session-dir <dir>` | Directory for local SQLite sessions |
 | `--provider <name>` / `--model <pattern>` / `--thinking <level>` | Initial model / thinking level |
+| `--models <patterns>` | Comma-separated scope for startup and cycling (pi's own matcher) |
+| `--api-key <key>` | Non-persistent key for the provider named by `--model`/`--models` |
+| `--fork <id>` | Copy a session into a new one in this directory (`--session-id` names it) |
 | `--offline` / `-h, --help` | Offline mode / usage |
 
 Without a positional prompt the harness serves RPC. A positional prompt selects a one-shot mode and the process exits `0` when the prompt is answered (non-zero otherwise). There is no interactive TUI: a terminal client uses RPC mode, so a prompt always runs one shot.

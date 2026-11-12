@@ -27,7 +27,8 @@ import {
 	SettingsManager,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ScopedModel } from "@earendil-works/pi-coding-agent";
 import type { Pool } from "pg";
 import { sessionFile, sessionPrefix, stampSession } from "./session.js";
 import type { HarnessConfig } from "./config.js";
@@ -86,7 +87,7 @@ class ExecutionEnvs {
 	};
 }
 
-interface OpenedStorage {
+export interface OpenedStorage {
 	readonly storage: Storage;
 	/** Record that the session was used now; PostgreSQL only, since SQLite has its mtime. */
 	readonly stamp?: () => Promise<void>;
@@ -97,7 +98,7 @@ interface OpenedStorage {
  * Open one session's storage (tasks 2.1-2.3). The container is the session; the
  * working directory and tenant only name it.
  */
-async function openStorage(config: HarnessConfig, key: string): Promise<OpenedStorage> {
+export async function openSessionStorage(config: HarnessConfig, key: string): Promise<OpenedStorage> {
 	if (config.ephemeral) {
 		return { storage: new MemoryStorage(), close: async () => {} };
 	}
@@ -142,6 +143,12 @@ export interface HarnessEngineOptions {
 	readonly extraExtensions?: readonly import("@earendil-works/pi-durable").Extension[];
 	/** The MCP exposure table and settings that decide activation (tasks 1.3, 2.2). */
 	readonly mcp?: { readonly entries: readonly McpToolEntry[]; readonly settings: McpSettings };
+	/** The model `--model`/`--models`/`--api-key` resolved, when one was named. */
+	readonly resolvedModel?: Model<string>;
+	/** The thinking level the resolution carried, so a `:high` suffix applies. */
+	readonly resolvedThinking?: ModelThinkingLevel;
+	/** `--models`: the scope startup and cycling use; absent means every available model. */
+	readonly modelScope?: readonly ScopedModel[];
 }
 
 export class HarnessEngine {
@@ -151,6 +158,8 @@ export class HarnessEngine {
 	readonly #closeStorage: () => Promise<void>;
 	/** Records that the session was used; PostgreSQL keeps a catalog, SQLite has mtime. */
 	readonly #stamp: (() => Promise<void>) | undefined;
+	/** `--models`: the models startup and cycling may use, in pattern order. */
+	readonly #modelScope: readonly ScopedModel[];
 	readonly #resources: PromptResources;
 	readonly #registry: import("@earendil-works/pi-durable").Registry;
 	/** The tools the conversation declares, captured at open (extension action reads). */
@@ -172,6 +181,7 @@ export class HarnessEngine {
 		registry: import("@earendil-works/pi-durable").Registry;
 		closeStorage: () => Promise<void>;
 		stamp?: () => Promise<void>;
+		modelScope?: readonly ScopedModel[];
 	}) {
 		this.#harness = options.harness;
 		this.#conversation = options.conversation;
@@ -181,11 +191,12 @@ export class HarnessEngine {
 		this.#registry = options.registry;
 		this.#closeStorage = options.closeStorage;
 		this.#stamp = options.stamp;
+		this.#modelScope = options.modelScope ?? [];
 	}
 
 	static async open(options: HarnessEngineOptions): Promise<HarnessEngine> {
 		const { config, key, modelRuntime, settingsManager, resources } = options;
-		const opened = await openStorage(config, key);
+		const opened = await openSessionStorage(config, key);
 		try {
 			const settings: HarnessSettings = createHarnessSettings(settingsManager, { persistWithinMs: config.persistWithinMs });
 			const registry = (await import("@earendil-works/pi-durable")).createRegistry();
@@ -242,7 +253,7 @@ export class HarnessEngine {
 				},
 				CONTEXT,
 			);
-			const agent = initialAgent(config, settingsManager, modelRuntime);
+			const agent = initialAgent(config, settingsManager, modelRuntime, options.resolvedModel, options.resolvedThinking);
 			const conversation = await harness.root(CONTEXT, { agent: { ...agent, tools: declared } });
 			harness.resume();
 			const opened2 = new HarnessEngine({
@@ -254,6 +265,7 @@ export class HarnessEngine {
 				registry,
 				closeStorage: opened.close,
 				...(opened.stamp === undefined ? {} : { stamp: opened.stamp }),
+				...(options.modelScope === undefined ? {} : { modelScope: options.modelScope }),
 			});
 			opened2.#declaredTools = declared.map((tool) => ({
 				name: tool.name,
@@ -492,6 +504,7 @@ export class HarnessEngine {
 			registry: this.#registry,
 			closeStorage: async () => {},
 			...(this.#stamp === undefined ? {} : { stamp: this.#stamp }),
+			modelScope: this.#modelScope,
 		});
 	}
 
@@ -563,6 +576,28 @@ export class HarnessEngine {
 		return conversation;
 	}
 
+	/** Whether a model is inside the `--models` scope; every model is without one. */
+	inModelScope(provider: string, modelId: string): boolean {
+		if (this.#modelScope.length === 0) return true;
+		return this.#modelScope.some((entry) => entry.model.provider === provider && entry.model.id === modelId);
+	}
+
+	/**
+	 * The models `get_available_models` and cycling may use: the scope when
+	 * `--models` named one, otherwise every model with credentials.
+	 */
+	async availableModels(): Promise<readonly { readonly provider: string; readonly id: string; readonly name: string }[]> {
+		if (this.#modelScope.length === 0) {
+			const models = await this.#modelRuntime.getAllAvailable();
+			return models.map((model) => ({ provider: model.provider, id: model.id, name: model.name }));
+		}
+		return this.#modelScope.map((entry) => ({
+			provider: entry.model.provider,
+			id: entry.model.id,
+			name: entry.model.name,
+		}));
+	}
+
 	/** Record that the session was used now (task 2.3). */
 	markActivity(): void {
 		void this.#stamp?.().catch(() => {});
@@ -578,8 +613,15 @@ function initialAgent(
 	config: HarnessConfig,
 	settingsManager: SettingsManager,
 	modelRuntime: ModelRuntime,
+	resolved?: Model<string>,
+	resolvedThinking?: ModelThinkingLevel,
 ): AgentChange {
 	const cwd = config.cwd;
+	// `--model`/`--models`/`--api-key` already resolved through pi's own resolver.
+	if (resolved !== undefined) {
+		const level = resolvedThinking ?? (config.thinking as ModelThinkingLevel | undefined) ?? settingsManager.getDefaultThinkingLevel();
+		return { cwd, model: { provider: resolved.provider, modelId: resolved.id }, ...(level === undefined ? {} : { thinkingLevel: level }) };
+	}
 	const thinking = config.thinking as ModelThinkingLevel | undefined;
 	const provider = config.provider ?? settingsManager.getDefaultProvider();
 	const modelId = config.model ?? settingsManager.getDefaultModel();

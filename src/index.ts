@@ -2,10 +2,17 @@
  * Harness entry point: resolve the startup contract, load pi's resources,
  * open the durable engine, and serve pi-RPC on stdin/stdout.
  */
-import { DefaultResourceLoader, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+	DefaultResourceLoader,
+	ModelRuntime,
+	resolveCliModel,
+	resolveModelScopeWithDiagnostics,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { resolveConfig, type HarnessConfig } from "./harness/config.js";
-import { HarnessEngine } from "./harness/engine.js";
-import { resolveSession } from "./harness/session.js";
+import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
+import { copySession } from "./harness/fork.js";
+import { newSessionId, resolveSession } from "./harness/session.js";
 import { runOneShot } from "./harness/oneshot.js";
 import type { PromptResources } from "./harness/prompt.js";
 import {
@@ -51,11 +58,14 @@ Session:
   -n, --name <name>     display name; not part of the identity
   --tenant <name>       tenant label (default: default)
   --session-dir <dir>   where SQLite sessions live
+  --fork <id>           copy a session into a new one in this directory
   --no-session          keep the session in memory and store nothing
 
 Model:
   --provider <name>     provider for the first request
   --model <pattern>     model id or pattern
+  --models <patterns>   comma-separated scope for startup and cycling
+  --api-key <key>       non-persistent key for the selected provider
   --thinking <level>    off, minimal, low, medium, high, xhigh, max
 
 Prompt:
@@ -71,7 +81,7 @@ Other:
   --offline             no network activity
 
 Accepted for pi compatibility and not acted on:
-  --api-key, --export, --fork, --models, --theme
+  --export, --theme
 
 Environment:
   PI_DURABLE_DATABASE_URL        PostgreSQL URL; unset stores in SQLite
@@ -125,12 +135,65 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// the config already warned, and pi's own resolver serves RPC either way. A
 	// stray token must never keep a client from reaching the server.
 
-	// Resolve the session before storage opens: explicit id, newest for `-c`, or new.
-	const resolved = await resolveSession(config);
+	// `--fork` picks a fresh session and copies a source into it; anything else
+	// resolves the session the ordinary way before storage opens.
+	const resolved =
+		config.forkFrom === undefined
+			? await resolveSession(config)
+			: { id: config.sessionKey ?? newSessionId() };
 	if (resolved.warning !== undefined) process.stderr.write(`pi-durable-harness: ${resolved.warning}\n`);
 	const key = resolved.id;
 	const modelRuntime = await ModelRuntime.create();
 	const settingsManager = SettingsManager.create(config.cwd);
+
+	// `--models` and `--model` resolve through pi's own resolver, so fuzzy
+	// matching, `:thinking` suffixes, and provider ambiguity behave as in pi.
+	const scope =
+		config.modelPatterns.length === 0
+			? undefined
+			: await resolveModelScopeWithDiagnostics([...config.modelPatterns], modelRuntime);
+	for (const diagnostic of scope?.diagnostics ?? []) {
+		process.stderr.write(`pi-durable-harness: ${diagnostic.message}\n`);
+	}
+	const cliModel = resolveCliModel({
+		...(config.provider === undefined ? {} : { cliProvider: config.provider }),
+		...(config.model === undefined ? {} : { cliModel: config.model }),
+		...(config.thinking === undefined ? {} : { cliThinking: config.thinking as never }),
+		inlineApiKey: config.apiKey !== undefined,
+		modelRuntime,
+	});
+	if (cliModel.error !== undefined) {
+		process.stderr.write(`pi-durable-harness: ${cliModel.error}\n`);
+		process.exitCode = 1;
+		return;
+	}
+	if (cliModel.warning !== undefined) process.stderr.write(`pi-durable-harness: ${cliModel.warning}\n`);
+	if (config.forkFrom !== undefined) {
+		// pi: the fork lands in this directory as a new session named by --session-id.
+		const source = await openSessionStorage(config, config.forkFrom);
+		const target = await openSessionStorage(config, key);
+		try {
+			const copied = await copySession(source.storage, target.storage, modelRuntime);
+			process.stderr.write(`pi-durable-harness: forked ${copied.entries} entries from ${config.forkFrom}\n`);
+		} catch (error) {
+			process.stderr.write(`pi-durable-harness: fork failed: ${error instanceof Error ? error.message : String(error)}\n`);
+			process.exitCode = 1;
+			return;
+		} finally {
+			await source.close().catch(() => {});
+			await target.close().catch(() => {});
+		}
+	}
+	if (config.apiKey !== undefined) {
+		// pi: the key applies to the provider of the model named by --model/--models.
+		const provider = cliModel.model?.provider ?? scope?.scopedModels[0]?.model.provider;
+		if (provider === undefined) {
+			process.stderr.write("pi-durable-harness: --api-key requires --model or --models\n");
+			process.exitCode = 1;
+			return;
+		}
+		await modelRuntime.setRuntimeApiKey(provider, config.apiKey);
+	}
 	const loader = new DefaultResourceLoader({
 		cwd: config.cwd,
 		agentDir: config.agentDir,
@@ -203,6 +266,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 		resources,
 		extraExtensions,
 		mcp: { entries: mcp.entries, settings: mcp.settings },
+		...(cliModel.model === undefined ? {} : { resolvedModel: cliModel.model }),
+		...(cliModel.thinkingLevel === undefined ? {} : { resolvedThinking: cliModel.thinkingLevel }),
+		...(scope === undefined ? {} : { modelScope: scope.scopedModels }),
 	});
 
 	// One snapshot and one context shape serve commands, session handlers, tools,

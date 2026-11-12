@@ -44,6 +44,12 @@ export interface HarnessConfig {
 	readonly skillPaths: readonly string[];
 	/** `--prompt-template`: extra template files or directories, repeatable. */
 	readonly promptTemplatePaths: readonly string[];
+	/** `--models`: comma-separated scope patterns for startup and cycling. */
+	readonly modelPatterns: readonly string[];
+	/** `--api-key`: a non-persistent key for the selected provider. */
+	readonly apiKey: string | undefined;
+	/** `--fork`: the session id to copy into this directory's new session. */
+	readonly forkFrom: string | undefined;
 	/** How long a deferred progress commit may stay in memory; `0` stores it at once. */
 	readonly persistWithinMs: number;
 	readonly offline: boolean;
@@ -77,11 +83,11 @@ const OPTIONS = {
 	// accepted for pi compatibility, consumed and ignored
 	skill: { type: "string", multiple: true },
 	"prompt-template": { type: "string", multiple: true },
-	// still accepted and ignored
-	"api-key": { type: "string" },
-	export: { type: "string" },
-	fork: { type: "string" },
 	models: { type: "string" },
+	"api-key": { type: "string" },
+	fork: { type: "string" },
+	// still accepted and ignored
+	export: { type: "string" },
 	theme: { type: "string" },
 } as const;
 
@@ -157,6 +163,10 @@ export function resolveConfig(
 	// `--session-id` wins when both are given; the name is never identity (task 1.4).
 	const sessionKey = text("session-id") ?? text("session");
 	const ephemeral = flag("no-session");
+	const forkFrom = text("fork");
+	if (forkFrom !== undefined && (flag("continue") || text("session") !== undefined)) {
+		warnings.push("--fork ignores --continue and --session; it copies into --session-id or a new session");
+	}
 	const tenant = text("tenant") ?? "default";
 	const schema = env.PI_DURABLE_PG_SCHEMA ?? "harness";
 	const sessionError =
@@ -213,6 +223,12 @@ export function resolveConfig(
 		appendSystemPrompt,
 		skillPaths: list("skill"),
 		promptTemplatePaths: list("prompt-template"),
+		modelPatterns: (text("models") ?? "")
+			.split(",")
+			.map((pattern) => pattern.trim())
+			.filter((pattern) => pattern.length > 0),
+		apiKey: text("api-key"),
+		forkFrom,
 		persistWithinMs,
 		offline: flag("offline") || env.PI_OFFLINE === "1",
 		help: flag("help"),

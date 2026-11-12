@@ -157,13 +157,16 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async availableModels(): Promise<{ models: unknown[] }> {
-		const models = await this.#engine.modelRuntime.getAllAvailable();
-		return { models: models.map((model) => ({ provider: model.provider, id: model.id, name: model.name })) };
+		// `--models` narrows this list; without it every available model is offered.
+		return { models: [...(await this.#engine.availableModels())] };
 	}
 
 	async setModel(provider: string, modelId: string): Promise<{ ok: boolean; error?: string }> {
 		const model = this.#engine.modelRuntime.getModel(provider, modelId);
 		if (model === undefined) return { ok: false, error: `Model not found: ${provider}/${modelId}` };
+		if (!this.#engine.inModelScope(provider, modelId)) {
+			return { ok: false, error: `Model not in scope: ${provider}/${modelId}` };
+		}
 		await this.#engine.appendControl({ type: "model_change", provider, modelId });
 		await this.#engine.configure({ model: { provider, modelId } });
 		this.#bus?.dispatch("model_select", { type: "model_select", provider, modelId, source: "set" });
@@ -171,7 +174,7 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async cycleModel(): Promise<{ model: unknown }> {
-		const models = await this.#engine.modelRuntime.getAllAvailable();
+		const models = await this.#engine.availableModels();
 		const current = (await this.#engine.resolvedAgent()).model;
 		const index = models.findIndex((model) => model.provider === current?.provider && model.id === current?.modelId);
 		const next = models[(index + 1) % Math.max(models.length, 1)];
