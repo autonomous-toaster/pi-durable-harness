@@ -58,6 +58,11 @@ function fakeEngine() {
 		emit(entry) {
 			listener?.({ kind: "value", retired: false, ops: [], value: { conversation: { id: 1 }, entries: [...entries, entry], docs: {} } });
 		},
+		/** The same, with a live document state (a run that just ended, say). */
+		emitWithRun(entry, live) {
+			const docs = live.running === false ? {} : { "pi.live": { run: { taskId: 1 } } };
+			listener?.({ kind: "value", retired: false, ops: [], value: { conversation: { id: 1 }, entries: [...entries, entry], docs } });
+		},
 	};
 }
 
@@ -165,4 +170,22 @@ test("extension bindings give the runner a ui context and execute nothing", asyn
 	// The harness's own host is the only executor: a bind writes no entry.
 	assert.deepEqual(engine.calls.controls, []);
 	assert.ok(runner !== undefined);
+});
+
+// pi's agent_end deletes the streaming component, so a run that ends before its
+// message is announced wipes the answer off the screen. The message must come first.
+test("agent_end is announced after the run's messages, never before", async () => {
+	const engine = fakeEngine();
+	const runtime = createTuiRuntime(engine, options);
+	await runtime.refresh();
+	await runtime.startWatching();
+	const seen = [];
+	runtime.session.subscribe((event) => seen.push(event.type));
+	// One revision where the run ends *and* its assistant message lands.
+	engine.emitWithRun(
+		{ id: 3, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "the answer" }] }] },
+		{ running: false },
+	);
+	assert.deepEqual(seen.slice(-3), ["entry_appended", "message_start", "message_end"], seen.join(","));
+	assert.equal(seen.includes("agent_end"), false, "the run was never running in this view");
 });

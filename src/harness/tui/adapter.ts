@@ -114,6 +114,31 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		};
 	}
 
+	/**
+	 * Run `/<extension-command> args` through pi's runner (pi's own
+	 * `_tryExecuteExtensionCommand`): without this, `/plannotator-last` is sent to the
+	 * model as a prompt instead of running the command.
+	 */
+	const runExtensionCommand = async (text: string): Promise<boolean> => {
+		if (!text.startsWith("/")) return false;
+		const space = text.indexOf(" ");
+		const name = space === -1 ? text.slice(1) : text.slice(1, space);
+		const args = space === -1 ? "" : text.slice(space + 1);
+		const target = runner() as {
+			getCommand?: (name: string) => { handler?: (args: string, context: unknown) => Promise<void> | void } | undefined;
+			createCommandContext?: () => unknown;
+			emitError?: (details: unknown) => void;
+		};
+		const command = target.getCommand?.(name);
+		if (command?.handler === undefined) return false;
+		try {
+			await command.handler(args, target.createCommandContext?.());
+		} catch (error) {
+			target.emitError?.({ extensionPath: `command:${name}`, event: "command", error: String(error) });
+		}
+		return true;
+	};
+
 	/** pi expands `/skill:` and `/<template>` in its session; the host does it here. */
 	const expand = (text: string): string => {
 		if (!text.startsWith("/")) return text;
@@ -182,9 +207,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				emitGeneration(live);
 				for (const slot of live?.tools ?? []) emitTool(view, slot);
 				const running = live?.run !== undefined;
-				if (running !== wasRunning) {
-					wasRunning = running;
-					announce(running ? { type: "agent_start" } : { type: "agent_end", messages: [] });
+				if (running !== wasRunning && running) {
+					wasRunning = true;
+					announce({ type: "agent_start" });
 				}
 				for (const entry of view.entries ?? []) {
 					if (seen.has(String((entry as { readonly id: unknown }).id))) continue;
@@ -197,6 +222,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 						noteToolCalls(message);
 						if (streaming !== undefined && message.role === "assistant") {
 							// The streamed message landed: finalize it, do not draw it twice.
+							finalisedGeneration = streamingJson;
 							streaming = undefined;
 							streamingJson = "";
 							announce({ type: "message_end", message });
@@ -210,12 +236,26 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 					}
 					emitControl(entry as never);
 				}
+				// pi's agent_end discards the streaming component, so it is announced only
+				// after the run's messages landed; otherwise the answer is wiped on arrival.
+				if (running !== wasRunning) {
+					wasRunning = running;
+					announce({ type: "agent_end", messages: [] });
+				}
 			} catch {
 				// One malformed view must not stop the transcript for the rest of the session.
 			}
 		};
+		let signature = "";
 		const read = async (): Promise<void> => {
-			apply(await engine.view());
+			const view = await engine.view();
+			// Nothing new means nothing to repaint; polling unconditionally made the TUI
+			// redraw its whole chat five times a second.
+			const entries = view.entries ?? [];
+			const next = `${entries.length}|${String((entries.at(-1) as { readonly id?: unknown } | undefined)?.id ?? "")}|${JSON.stringify(view.docs?.["pi.live"] ?? null).length}`;
+			if (next === signature) return;
+			signature = next;
+			apply(view);
 			// The synchronous getters answer from this snapshot, so it is refreshed with
 			// every read; without it the footer counters and /session stats stay empty.
 			await refresh();
@@ -284,6 +324,8 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	/** The newest in-flight assistant message: the only place a running call's arguments exist. */
 	let partial: Record<string, unknown> | undefined;
 	let streamingJson = "";
+	/** The generation already drawn and finalized, so a lingering partial is not redrawn. */
+	let finalisedGeneration = "";
 	const callsInGeneration = new Set<string>();
 
 	/** Announce the in-flight assistant message as the pair the TUI streams (task 5.3). */
@@ -295,6 +337,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		}
 		partial = message;
 		const json = JSON.stringify(message);
+		if (json === finalisedGeneration) return;
 		if (streaming === undefined) {
 			streaming = message;
 			streamingJson = json;
@@ -648,12 +691,16 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		// pi's prompt() resolves when the run settles, and that await is what drives the
 		// durable run: a dropped submission leaves it pending at turn 0.
 		prompt: async (text: string, submitOptions?: { readonly expandPromptTemplates?: boolean }) => {
+			// pi dispatches an extension command before anything reaches the model.
+			if (submitOptions?.expandPromptTemplates !== false && (await runExtensionCommand(text))) return;
 			await engine.submitAndWait(submitOptions?.expandPromptTemplates === false ? text : expand(text));
 		},
 		steer: async (text: string) => {
+			if (await runExtensionCommand(text)) return;
 			await engine.submitAndWait(expand(text), "steer");
 		},
 		followUp: async (text: string) => {
+			if (await runExtensionCommand(text)) return;
 			await engine.submitAndWait(expand(text), "followUp");
 		},
 		sendUserMessage: async (content: string) => {
