@@ -41,6 +41,21 @@ The package installs one command, **`pi-durable-harness`** (`bin` in `package.js
 
 The package is private. Three artifacts are supported: the ESM package (`dist/`), one JavaScript file (`dist/bundle/cli.js`) that runs anywhere Node does with no `node_modules` beside it, and a single Node SEA executable (`dist/sea/pi-durable-harness`) that needs no Node installed. See [Limitations](#limitations) for what the SEA build gives up.
 
+### The SEA executable
+
+```bash
+npx -y node@22.19.0 scripts/build-sea.mjs   # a shared Node cannot build one
+./dist/sea/pi-durable-harness --help
+```
+
+Its argv belongs to the harness, not to Node, so a Node flag goes through the environment rather than after the executable:
+
+```bash
+NODE_OPTIONS=--trace-warnings ./dist/sea/pi-durable-harness --help
+```
+
+`--help` and a PostgreSQL session say nothing on stderr. A session on the SQLite backend prints Node's experimental-feature notice for `node:sqlite`; `NODE_OPTIONS=--no-warnings` silences it.
+
 ## Quick start (RPC)
 
 ```bash

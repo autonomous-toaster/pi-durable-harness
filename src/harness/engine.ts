@@ -21,7 +21,6 @@ import {
 	type Submission,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import {
 	DefaultResourceLoader,
 	ModelRuntime,
@@ -30,8 +29,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Pool } from "pg";
-import pg from "pg";
-import { openPostgresStorage } from "../storage/postgres/storage.js";
 import { sessionFile, sessionPrefix, stampSession } from "./session.js";
 import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
@@ -105,6 +102,12 @@ async function openStorage(config: HarnessConfig, key: string): Promise<OpenedSt
 		return { storage: new MemoryStorage(), close: async () => {} };
 	}
 	if (config.databaseUrl !== undefined) {
+		// Loaded on demand: the backends pull large libraries, and Node 22 warns
+		// about `node:sqlite` the moment it is required — even for `--help`.
+		const [{ default: pg }, { openPostgresStorage }] = await Promise.all([
+			import("pg"),
+			import("../storage/postgres/storage.js"),
+		]);
 		const pool: Pool = new pg.Pool({ connectionString: config.databaseUrl });
 		const storage = await openPostgresStorage({
 			pool,
@@ -124,6 +127,7 @@ async function openStorage(config: HarnessConfig, key: string): Promise<OpenedSt
 	}
 	const path = sessionFile(config, key);
 	await mkdir(dirname(path), { recursive: true });
+	const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");
 	const storage = await openNodeSqliteStorage(path);
 	return { storage, close: () => storage.close(CONTEXT) };
 }
