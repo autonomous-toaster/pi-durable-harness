@@ -100,15 +100,65 @@ export function resolveSsl(options: { readonly url?: string; readonly env: Recor
 	};
 }
 
+/** The hostname a URL names, or undefined when it is an IP or unparsable. */
+export function hostnameOf(url: string): string | undefined {
+	try {
+		const host = new URL(url).hostname;
+		// An IP cannot be a TLS server name, so it must not be sent as one.
+		return host === "" || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":") ? undefined : host;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * A hint for a connection that failed for a reason the operator can fix. Supavisor,
+ * the Supabase pooler, resolves the tenant from the username's `.<ref>` suffix or
+ * from the TLS server name; without either it answers ENOIDENTIFIER, which says
+ * nothing about what to change.
+ */
+export function connectionHint(url: string, error: unknown): string | undefined {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!/ENOIDENTIFIER|no tenant identifier|sni_hostname/i.test(message)) return undefined;
+	const host = hostnameOf(url) ?? "the pooler host";
+	return [
+		`${host} is a pooler that identifies the tenant from the username or the TLS server name.`,
+		"Use the project-scoped user (postgres.<project-ref>) in the URL, or set",
+		`PI_DURABLE_PG_SSL_SERVERNAME=db.<project-ref>.supabase.co so the name is sent.`,
+	].join(" ");
+}
+
+/**
+ * The tenant a pooler will ask for, when the URL does not name one. Supavisor's
+ * shared pooler needs `postgres.<project-ref>`; a bare `postgres` user and no
+ * server name is answered with ENOIDENTIFIER after a round trip, so it is worth
+ * saying before the connection is attempted.
+ */
+export function missingTenant(url: string): string | undefined {
+	try {
+		const parsed = new URL(url);
+		const isPooler = /\.pooler\./.test(parsed.hostname);
+		if (!isPooler) return undefined;
+		const user = decodeURIComponent(parsed.username);
+		if (user.includes(".")) return undefined;
+		return `the pooler at ${parsed.hostname} needs a tenant: use postgres.<project-ref> as the user, or set PI_DURABLE_PG_SSL_SERVERNAME=db.<project-ref>.supabase.co`;
+	} catch {
+		return undefined;
+	}
+}
+
 /** The pool options for a database URL under an environment, with TLS applied. */
 export function poolOptions(
 	url: string,
 	env: Record<string, string | undefined> = process.env,
 ): { readonly connectionString: string; readonly ssl?: SslDecision["ssl"]; readonly enforce: boolean } {
 	const decision = resolveSsl({ url, env });
+	// A pooler that identifies its tenant from SNI needs the name sent, and node only
+	// sends it when `ssl` is an object it can read a servername from.
+	const servername = decision.ssl?.servername ?? (decision.ssl === undefined ? undefined : hostnameOf(url));
 	return {
 		connectionString: url,
-		...(decision.ssl === undefined ? {} : { ssl: decision.ssl }),
+		...(decision.ssl === undefined ? {} : { ssl: { ...decision.ssl, ...(servername === undefined ? {} : { servername }) } }),
 		enforce: decision.enforce,
 	};
 }

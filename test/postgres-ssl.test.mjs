@@ -57,3 +57,34 @@ test("poolOptions carries the verified TLS settings", () => {
 	assert.equal(options.enforce, true);
 	assert.equal(options.ssl.rejectUnauthorized, true);
 });
+
+test("a pooler gets the server name, so Supavisor can find the tenant", () => {
+	const pooler = "postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres";
+	const options = poolOptions(pooler, { PI_DURABLE_PG_SSL: "verify-full", PI_DURABLE_PG_SSL_CA: caPath });
+	assert.equal(options.ssl.servername, "aws-0-eu-west-3.pooler.supabase.com");
+	// An IP cannot be a TLS server name.
+	const byIp = poolOptions("postgres://postgres:pw@10.0.0.5:5432/postgres", {
+		PI_DURABLE_PG_SSL: "verify-full",
+		PI_DURABLE_PG_SSL_CA: caPath,
+	});
+	assert.equal(byIp.ssl.servername, undefined);
+});
+
+test("ENOIDENTIFIER is explained rather than echoed", async () => {
+	const { connectionHint } = await import("../dist/storage/postgres/ssl.js");
+	const hint = connectionHint("postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres", new Error("(ENOIDENTIFIER) no tenant identifier provided"));
+	assert.match(hint, /postgres\.<project-ref>/);
+	assert.match(hint, /PI_DURABLE_PG_SSL_SERVERNAME/);
+	assert.equal(connectionHint(url, new Error("connection refused")), undefined);
+});
+
+test("a pooler URL without a tenant says so before connecting", async () => {
+	const { missingTenant } = await import("../dist/storage/postgres/ssl.js");
+	assert.match(
+		missingTenant("postgres://postgres:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"),
+		/postgres\.<project-ref>/,
+	);
+	// Already scoped, or not a pooler: nothing to say.
+	assert.equal(missingTenant("postgres://postgres.abcdefgh:pw@aws-0-eu-west-3.pooler.supabase.com:6543/postgres"), undefined);
+	assert.equal(missingTenant("postgres://postgres:pw@db.abcdefgh.supabase.co:5432/postgres"), undefined);
+});

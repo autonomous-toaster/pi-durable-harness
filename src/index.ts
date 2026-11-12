@@ -142,6 +142,12 @@ function projectTrusted(agentDir: string, cwd: string): boolean {
 export async function main(argv: readonly string[]): Promise<void> {
 	const config = resolveConfig(argv, process.env);
 	for (const warning of config.warnings) process.stderr.write(`pi-durable-harness: ${warning}\n`);
+	if (config.databaseUrl !== undefined) {
+		// Said before connecting, because the pooler's answer is cryptic.
+		const { missingTenant } = await import("./storage/postgres/ssl.js");
+		const tenant = missingTenant(config.databaseUrl);
+		if (tenant !== undefined) process.stderr.write(`pi-durable-harness: ${tenant}\n`);
+	}
 	if (config.help) {
 		process.stdout.write(USAGE);
 		return;

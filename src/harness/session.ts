@@ -81,14 +81,18 @@ async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<voi
 /** A short-lived pool over the configured database. */
 async function withPool<T>(config: HarnessConfig, use: (client: pg.PoolClient) => Promise<T>): Promise<T | undefined> {
 	if (config.databaseUrl === undefined) return undefined;
-	const { poolOptions, assertEncrypted } = await import("../storage/postgres/ssl.js");
+	const { poolOptions, assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
 	const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl);
 	const pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }) });
-	const client = await pool.connect().catch(() => undefined);
-	if (client === undefined) {
+	const client = await pool.connect().catch(async (error: unknown) => {
+		// A swallowed connection error left the operator reading a bare driver message.
+		const hint = connectionHint(connectionString, error);
+		process.stderr.write(`pi-durable-harness: PostgreSQL connection failed: ${error instanceof Error ? error.message : String(error)}\n`);
+		if (hint !== undefined) process.stderr.write(`pi-durable-harness: ${hint}\n`);
 		await pool.end().catch(() => {});
 		return undefined;
-	}
+	});
+	if (client === undefined) return undefined;
 	try {
 		if (enforce) await assertEncrypted(client);
 		return await use(client);
