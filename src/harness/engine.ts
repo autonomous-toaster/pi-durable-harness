@@ -109,7 +109,17 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			import("pg"),
 			import("../storage/postgres/storage.js"),
 		]);
-		const pool: Pool = new pg.Pool({ connectionString: config.databaseUrl });
+		const { poolOptions, assertEncrypted } = await import("../storage/postgres/ssl.js");
+		const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl);
+		const pool: Pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }) });
+		if (enforce) {
+			const probe = await pool.connect();
+			try {
+				await assertEncrypted(probe);
+			} finally {
+				probe.release();
+			}
+		}
 		const storage = await openPostgresStorage({
 			pool,
 			schema: config.schema,

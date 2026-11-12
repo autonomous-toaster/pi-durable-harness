@@ -82,13 +82,16 @@ async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<voi
 /** A short-lived pool over the configured database. */
 async function withPool<T>(config: HarnessConfig, use: (client: pg.PoolClient) => Promise<T>): Promise<T | undefined> {
 	if (config.databaseUrl === undefined) return undefined;
-	const pool = new pg.Pool({ connectionString: config.databaseUrl });
+	const { poolOptions, assertEncrypted } = await import("../storage/postgres/ssl.js");
+	const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl);
+	const pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }) });
 	const client = await pool.connect().catch(() => undefined);
 	if (client === undefined) {
 		await pool.end().catch(() => {});
 		return undefined;
 	}
 	try {
+		if (enforce) await assertEncrypted(client);
 		return await use(client);
 	} finally {
 		client.release();

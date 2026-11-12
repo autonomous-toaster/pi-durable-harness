@@ -100,6 +100,9 @@ npm install && npm run build
 
 ```bash
 export PI_DURABLE_DATABASE_URL='postgres://harness:harness@127.0.0.1:55432/harness'
+# A managed server: prove it with its CA and refuse anything unencrypted.
+export PI_DURABLE_PG_SSL='verify-full'
+export PI_DURABLE_PG_SSL_CA="$HOME/Downloads/prod-ca-2021.crt"
 ```
 
 **4. First run — a new session `demo` and one prompt.**
@@ -213,6 +216,11 @@ Environment variables:
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
 | `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `harness`). |
+| `PI_DURABLE_PG_SSL` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a CA. |
+| `PI_DURABLE_PG_SSL_CA` | CA certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |
+| `PI_DURABLE_PG_SSL_CERT` / `PI_DURABLE_PG_SSL_KEY` | Client certificate and key in PEM, for mutual TLS. Set both or neither. |
+| `PI_DURABLE_PG_SSL_SERVERNAME` | The name the server certificate must carry, when it differs from the host in the URL. |
+| `PI_DURABLE_PG_REQUIRE_SSL` | `1` refuses a connection that is not encrypted, even when the URL asked for none. |
 | `PI_DURABLE_PERSIST_WITHIN_MS` | How long a deferred progress commit may stay in memory before it is stored. Default `0` (store each partial at once). A non-zero value batches streamed progress and loses up to that much on a crash. |
 | `PI_CODING_AGENT_DIR` | Config directory (default `~/.pi/agent`); tilde is expanded. |
 | `PI_CODING_AGENT_SESSION_DIR` | Overrides the local session directory. |
