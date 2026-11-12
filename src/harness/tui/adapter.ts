@@ -14,7 +14,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExtensionRuntime, ExtensionRunner, type Extension } from "@earendil-works/pi-coding-agent";
 import type { HarnessEngine } from "../engine.js";
-import { projectEntry } from "../projection.js";
+import { projectEntries, projectEntry } from "../projection.js";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -194,7 +194,18 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		);
 	};
 
-	const piEntries = (): unknown[] => entries.map((entry) => projectEntry(entry as never, null));
+	/**
+	 * The transcript as pi's session entries. Each one carries its predecessor as
+	 * `parentId`: pi walks that chain to render history, and a null parent on every
+	 * entry leaves it with the leaf alone — the last message and nothing before it.
+	 */
+	const piEntries = (): unknown[] => projectEntries(entries as never).entries;
+	/** One entry as pi would see it, with the predecessor it hangs from. */
+	const projectedOf = (entry: unknown): unknown => {
+		const all = projectEntries(entries as never).entries as readonly { readonly id?: unknown }[];
+		return all.find((candidate) => String(candidate.id) === String((entry as { readonly id?: unknown }).id)) ?? projectEntry(entry as never, null);
+	};
+
 	const announce = (event: unknown): void => {
 		for (const listener of listeners) listener(event);
 	};
@@ -289,7 +300,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				for (const entry of view.entries ?? []) {
 					if (seen.has(String((entry as { readonly id: unknown }).id))) continue;
 					seen.add(String((entry as { readonly id: unknown }).id));
-					announce({ type: "entry_appended", entry: projectEntry(entry as never, null) });
+					announce({ type: "entry_appended", entry: projectedOf(entry) });
 					// A message entry is announced as the message pair the TUI draws
 					// (pi's AgentSessionEvent carries the message, not the entry).
 					const message = (entry as { readonly model?: readonly { readonly role?: string }[] }).model?.[0];

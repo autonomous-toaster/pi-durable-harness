@@ -102,7 +102,7 @@ npm install && npm run build
 export PI_DURABLE_DATABASE_URL='postgres://harness:harness@127.0.0.1:55432/harness'
 # A managed server: prove it with its CA and refuse anything unencrypted.
 export PI_DURABLE_PG_SSL='verify-full'
-export PI_DURABLE_PG_SSL_CA="$HOME/Downloads/prod-ca-2021.crt"
+export PI_DURABLE_PG_SSL_CA="$HOME/Downloads/ca.pem"
 ```
 
 **4. First run — a new session `demo` and one prompt.**

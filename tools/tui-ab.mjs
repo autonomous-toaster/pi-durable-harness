@@ -18,7 +18,8 @@
  * the real configuration: PI_DURABLE_AGENT_DIR overrides it.
  */
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
+import { rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -61,6 +62,16 @@ const scenarios = [
 	{ name: "tree-selector", mode: "set", steps: [{ send: "Say exactly: tree" }, { key: "Enter" }, { key: "Escape", wait: 800 }, { key: "Escape" }], wait: 20_000 },
 	{ name: "ctrl-o-expand", steps: [{ send: "Use the bash tool (not codemode) with command: printf expanded" }, { key: "Enter", wait: 16_000 }, { key: "C-o" }], wait: 20_000, mode: "rows", slow: true },
 	{ name: "interrupt-escape", steps: [{ send: "Count slowly from 1 to 40" }, { key: "Enter", wait: 4000 }, { key: "Escape" }], wait: 12_000, slow: true },
+	{
+		name: "resume-continue",
+		steps: [{ send: "Say exactly: reply-one" }, { key: "Enter", wait: 14_000 }, { send: "Say exactly: reply-two" }],
+		wait: 16_000,
+		resume: true,
+		// The model's wording differs between runs; that both prompts and both answers
+		// came back is what the resumed transcript must prove.
+		expect: ["Say exactly: reply-one", "Say exactly: reply-two"],
+		mode: "resume",
+	},
 	{ name: "history-ctrl-r", steps: [{ send: "Say exactly: history" }, { key: "Enter", wait: 14_000 }, { key: "C-r" }], wait: 18_000, slow: true },
 ];
 
@@ -95,20 +106,27 @@ function rows(lines) {
 const CRASH = /uncaughtException|To report this crash|TypeError:|ReferenceError:/;
 
 const sessions = { pi: "ab-pi", ours: "ab-ours" };
+const sessionDirOf = (side) => join(tmpdir(), `pi-ab-sessions-${side}`);
 const commands = {
-	pi: `PI_CODING_AGENT_DIR=${agentDir} pi --provider ${provider} --model ${model}`,
-	ours: `PI_CODING_AGENT_DIR=${agentDir} node ${join(root, "dist", "cli.js")} --provider ${provider} --model ${model}`,
+	pi: (side) =>
+		`PI_CODING_AGENT_DIR=${agentDir} PI_CODING_AGENT_SESSION_DIR=${sessionDirOf(side)} pi --provider ${provider} --model ${model}`,
+	ours: (side) =>
+		`PI_CODING_AGENT_DIR=${agentDir} PI_CODING_AGENT_SESSION_DIR=${sessionDirOf(side)} node ${join(root, "dist", "cli.js")} --provider ${provider} --model ${model}`,
 };
 
 async function run(scenario) {
-	for (const [side, session] of Object.entries(sessions)) {
-		try {
-			tmux("kill-session", "-t", session);
-		} catch {}
-		tmux("new-session", "-d", "-s", session, "-x", "170", "-y", "60", "-c", root);
-		tmux("send-keys", "-t", session, commands[side], "Enter");
-	}
-	await sleep(15_000);
+	for (const side of Object.keys(sessions)) rmSync(sessionDirOf(side), { recursive: true, force: true });
+	const boot = async (suffix = "") => {
+		for (const [side, session] of Object.entries(sessions)) {
+			try {
+				tmux("kill-session", "-t", session);
+			} catch {}
+			tmux("new-session", "-d", "-s", session, "-x", "170", "-y", "60", "-c", root);
+			tmux("send-keys", "-t", session, `${commands[side](side)}${suffix}`, "Enter");
+		}
+		await sleep(15_000);
+	};
+	await boot();
 	for (const [side, session] of Object.entries(sessions)) {
 		for (const step of scenario.steps) {
 			if (step.type !== undefined) {
@@ -124,6 +142,17 @@ async function run(scenario) {
 		}
 	}
 	await sleep(scenario.wait);
+	if (scenario.resume === true) {
+		// Quit both, then resume the newest session the same way a user would.
+		for (const session of Object.values(sessions)) {
+			tmux("send-keys", "-t", session, "C-d");
+			await sleep(600);
+			tmux("send-keys", "-t", session, "C-d");
+		}
+		await sleep(2500);
+		await boot(" -c");
+		await sleep(6000);
+	}
 	const captured = {};
 	for (const [side, session] of Object.entries(sessions)) {
 		const raw = tmux("capture-pane", "-p", "-t", session);
@@ -134,6 +163,7 @@ async function run(scenario) {
 	const view = (entry) => {
 		if (scenario.mode === "set") return entry.lines;
 		if (scenario.mode === "rows") return rows(entry.lines);
+		if (scenario.mode === "resume") return entry.lines;
 		if (scenario.mode === "chrome") return entry.lines.filter((line) => /\(\w[\w-]*\) \S+ •|^>|^─{20,}$/.test(line)).slice(-4);
 		return entry.lines.slice(-12);
 	};
@@ -143,6 +173,11 @@ async function run(scenario) {
 	// shows a line the other does not.
 	const missingFromOurs = expectedView.filter((line) => !actualView.includes(line));
 	const missingFromTheirs = actualView.filter((line) => !expectedView.includes(line));
+	if (scenario.mode === "resume") {
+		const expect = scenario.expect ?? [];
+		const both = Object.values(captured).every((entry) => expect.every((text) => entry.raw.includes(text)));
+		return { scenario: scenario.name, identical: both, crashed: { pi: expected.crashed, ours: actual.crashed }, expectedView, actualView };
+	}
 	const identical =
 		scenario.mode === "set" || scenario.mode === "chrome"
 			? missingFromOurs.length === 0 && missingFromTheirs.length === 0
