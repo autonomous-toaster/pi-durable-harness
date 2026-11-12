@@ -42,6 +42,8 @@ const steps = [
 	// The model words a tool answer differently each run, so this step is reported
 	// but does not decide parity; the row itself is checked by the live test.
 	{ name: "tool", keys: ["Use the bash tool (not codemode) with command: printf parity"], settle: 18_000, strict: false },
+	// codemode draws through its extension's renderer, not a built-in one.
+	{ name: "codemode", keys: ["Use codemode to print hi"], settle: 18_000 },
 	{ name: "session", keys: ["/session"], settle: 6_000 },
 ];
 

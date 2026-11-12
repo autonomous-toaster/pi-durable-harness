@@ -75,6 +75,13 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	let model: Record<string, unknown> | undefined;
 	let poller: ReturnType<typeof setInterval> | undefined;
 	let lastAssistant: string | undefined;
+	/** Renderers that live with pi's built-in tools (codemode), loaded from pi's own files. */
+	let builtinRenderers: Record<string, Record<string, unknown>> = {};
+	/** Turn counter already announced, so the working spinner starts once per turn. */
+	let announcedTurn = -1;
+	let retryAnnounced = false;
+	let compacting = new Set<string>();
+	let settledAnnounced = false;
 	/** The models startup lists as "Model scope" and Ctrl+P cycles. */
 	let scoped: { model: Record<string, unknown>; thinkingLevel?: string }[] = [];
 	let bashProcess: ReturnType<typeof spawn> | undefined;
@@ -95,7 +102,8 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			getShortcuts: empty,
 			getShortcutDiagnostics: empty,
 			// Renderers: none until pi's runner is bound beside the host (task 6.1).
-			resolveToolRenderers: empty,
+			// pi's own fallback is what draws bash, read, edit, and write.
+			resolveToolRenderers: (_name: string, fallback?: () => unknown) => fallback?.(),
 			getToolRenderers: empty,
 			getMessageRenderer: none,
 			getMessageRenderers: empty,
@@ -139,6 +147,37 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		return true;
 	};
 
+	/**
+	 * pi's session tree: root nodes, each with the entries beneath it. The label and
+	 * its timestamp come from the label control entries, as in pi's own manager.
+	 */
+	const buildTree = (list: readonly unknown[]): unknown[] => {
+		type Node = { entry: unknown; children: Node[]; label?: string; labelTimestamp?: string };
+		const nodes = new Map<string, Node>();
+		const roots: Node[] = [];
+		for (const entry of list) nodes.set(String((entry as { id: unknown }).id), { entry, children: [] });
+		for (const entry of list) {
+			const typed = entry as { readonly id: unknown; readonly parentId?: unknown };
+			const node = nodes.get(String(typed.id));
+			if (node === undefined) continue;
+			const parent = typed.parentId == null ? undefined : nodes.get(String(typed.parentId));
+			if (parent === undefined || String(typed.parentId) === String(typed.id)) roots.push(node);
+			else parent.children.push(node);
+		}
+		for (const entry of list) {
+			const typed = entry as { readonly type?: string; readonly label?: string; readonly targetId?: unknown; readonly timestamp?: string };
+			if (typed.type !== "label" || typed.label === undefined) continue;
+			const target = typed.targetId === undefined ? undefined : nodes.get(String(typed.targetId));
+			// A control entry without a target labels the entry before it, as pi does.
+			const node = target ?? nodes.get(String((list[list.indexOf(entry) - 1] as { readonly id?: unknown } | undefined)?.id));
+			if (node !== undefined) {
+				node.label = typed.label;
+				if (typed.timestamp !== undefined) node.labelTimestamp = typed.timestamp;
+			}
+		}
+		return roots;
+	};
+
 	/** pi expands `/skill:` and `/<template>` in its session; the host does it here. */
 	const expand = (text: string): string => {
 		if (!text.startsWith("/")) return text;
@@ -157,7 +196,26 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		for (const listener of listeners) listener(event);
 	};
 
+	/**
+	 * pi's codemode renderer is not a core renderer: it lives beside the codemode
+	 * extension and is not re-exported. The pinned version makes its path stable, and a
+	 * failure falls back to the generic tool row rather than breaking the TUI.
+	 */
+	const loadBuiltinRenderers = async (): Promise<void> => {
+		if (Object.keys(builtinRenderers).length > 0) return;
+		try {
+			const base = new URL(".", import.meta.resolve("@earendil-works/pi-coding-agent"));
+			const module = (await import(new URL("extensions/codemode/renderer.js", base).href)) as {
+				readonly codemodeRenderers?: Record<string, unknown>;
+			};
+			if (module.codemodeRenderers !== undefined) builtinRenderers = { codemode: module.codemodeRenderers };
+		} catch {
+			builtinRenderers = {};
+		}
+	};
+
 	const refresh = async (): Promise<void> => {
+		await loadBuiltinRenderers();
 		const [nextEntries, nextMessages, quiescent, agent] = await Promise.all([
 			engine.entries(),
 			engine.messages(),
@@ -202,15 +260,29 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		}): void => {
 			try {
 				const live = view.docs?.["pi.live"] as
-					| { readonly run?: unknown; readonly generation?: unknown; readonly tools?: readonly Record<string, unknown>[] }
+					| {
+							readonly run?: unknown;
+							readonly generation?: unknown;
+							readonly tools?: readonly Record<string, unknown>[];
+							readonly compactions?: readonly Record<string, unknown>[];
+						}
 					| undefined;
 				emitGeneration(live);
 				for (const slot of live?.tools ?? []) emitTool(view, slot);
-				const running = live?.run !== undefined;
+				const run = live?.run as { readonly turns?: number } | undefined;
+				const running = run !== undefined;
 				if (running !== wasRunning && running) {
 					wasRunning = true;
+					settledAnnounced = false;
 					announce({ type: "agent_start" });
 				}
+				// A turn shows pi's working indicator and its terminal progress.
+				if (running && (run?.turns ?? 0) > announcedTurn) {
+					announcedTurn = run?.turns ?? 0;
+					announce({ type: "turn_start" });
+				}
+				emitRetries(live);
+				emitCompactions(live);
 				for (const entry of view.entries ?? []) {
 					if (seen.has(String((entry as { readonly id: unknown }).id))) continue;
 					seen.add(String((entry as { readonly id: unknown }).id));
@@ -240,6 +312,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				// after the run's messages landed; otherwise the answer is wiped on arrival.
 				if (running !== wasRunning) {
 					wasRunning = running;
+					announcedTurn = -1;
 					announce({ type: "agent_end", messages: [] });
 				}
 			} catch {
@@ -259,6 +332,11 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			// The synchronous getters answer from this snapshot, so it is refreshed with
 			// every read; without it the footer counters and /session stats stay empty.
 			await refresh();
+			// pi flushes deferred bash results and checks a pending shutdown on this event.
+			if (idle && !settledAnnounced && !wasRunning) {
+				settledAnnounced = true;
+				announce({ type: "agent_settled" });
+			}
 		};
 		stream.start((call) => {
 			if (call.kind !== "value") return;
@@ -301,6 +379,42 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			}
 		}
 		return undefined;
+	};
+
+	/** Durable retry backoff, drawn as pi's retry indicator with its attempt and delay. */
+	const emitRetries = (live: { readonly generation?: unknown } | undefined): void => {
+		const retry = (live?.generation as { readonly retry?: { readonly at: number; readonly error: string } } | undefined)?.retry;
+		if (retry !== undefined && !retryAnnounced) {
+			retryAnnounced = true;
+			announce({
+				type: "auto_retry_start",
+				attempt: 1,
+				maxAttempts: 5,
+				delayMs: Math.max(0, retry.at - Date.now()),
+				errorMessage: retry.error,
+			});
+			return;
+		}
+		if (retry === undefined && retryAnnounced) {
+			retryAnnounced = false;
+			announce({ type: "auto_retry_end", success: true, attempt: 1 });
+		}
+	};
+
+	/** Durable compaction tasks, drawn as pi's compaction status; escape aborts them. */
+	const emitCompactions = (live: { readonly compactions?: readonly Record<string, unknown>[] } | undefined): void => {
+		const now = new Set((live?.compactions ?? []).map((task) => String(task.taskId)));
+		for (const id of now) {
+			if (compacting.has(id)) continue;
+			compacting.add(id);
+			const trigger = (live?.compactions ?? []).find((task) => String(task.taskId) === id)?.trigger;
+			announce({ type: "compaction_start", reason: trigger === "threshold" || trigger === "overflow" ? trigger : "manual" });
+		}
+		for (const id of [...compacting]) {
+			if (now.has(id)) continue;
+			compacting.delete(id);
+			announce({ type: "compaction_end", reason: "manual", result: undefined, aborted: false, willRetry: false });
+		}
 	};
 
 	/** Announce one tool slot as the start/update/end the TUI draws (task 5.1). */
@@ -429,8 +543,25 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		getEntries: () => piEntries(),
 		getEntryCount: () => entries.length,
 		getBranch: () => piEntries(),
-		getTree: () => piEntries(),
-		buildContextEntries: () => piEntries(),
+		// The tree selector walks `children`, so a root node list with empty arrays is
+		// what it needs; a flat entry list crashed it on the first double escape.
+		getTree: () => buildTree(piEntries()),
+		// The branch from root to leaf, which is the context the model sees.
+		buildContextEntries: () => {
+			const list = piEntries();
+			const byId = new Map<string, Record<string, unknown>>(list.map((entry) => [String((entry as { id: unknown }).id), entry as Record<string, unknown>]));
+			const path: Record<string, unknown>[] = [];
+			let cursor = list.at(-1) as { readonly id?: unknown; readonly parentId?: unknown } | undefined;
+			const seen = new Set<string>();
+			while (cursor?.id !== undefined && !seen.has(String(cursor.id))) {
+				seen.add(String(cursor.id));
+				const entry = byId.get(String(cursor.id));
+				if (entry !== undefined) path.push(entry);
+				const parentId = entry?.parentId as string | null | undefined;
+				cursor = parentId == null ? undefined : (byId.get(String(parentId)) as { readonly id?: unknown; readonly parentId?: unknown } | undefined);
+			}
+			return path.reverse();
+		},
 		getLeafId: () => {
 			const last = entries.at(-1) as { readonly id?: unknown } | undefined;
 			return last?.id === undefined ? null : String(last.id);
@@ -678,7 +809,13 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		getCallableToolNames: () => [...engine.declaredToolNames()],
 		getAllTools: () =>
 			engine.allTools().map((tool) => ({ name: tool.name, description: tool.description ?? "", parameters: tool.parameters })),
-		getToolDefinition: () => undefined,
+		getToolDefinition: (name: string) => {
+			const definition = (engine.allTools() as readonly Record<string, unknown>[]).find((tool) => tool.name === name);
+			if (definition === undefined) return undefined;
+			// pi merges its built-in renderers itself; a tool whose renderer lives in a
+			// built-in extension (codemode) needs them here or it draws as an unknown tool.
+			return { ...definition, ...(builtinRenderers[name] ?? {}) };
+		},
 		setActiveToolsByName: (names: readonly string[]) => {
 			void engine.configure({ tools: engine.activeTools(names) } as never);
 		},

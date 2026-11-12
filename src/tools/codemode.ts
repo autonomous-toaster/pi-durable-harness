@@ -9,8 +9,10 @@ import {
 	CodemodeSandbox,
 	InlineCodemodeSandbox,
 	loadQuickJSWasm,
+	toCodemodeIdentifier,
 	type CodemodeResult,
 	type CodemodeSandboxBase,
+	type CodemodeTool,
 } from "@earendil-works/pi-codemode";
 import { defineTool, type ToolExecutionApi, type ToolRegistration, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { callable, mcpEntries } from "./state.js";
@@ -26,6 +28,18 @@ import {
 	createCodemodeDescription as piCreateCodemodeDescription,
 	DEFAULT_CODEMODE_INLINE_BUDGET,
 } from "../harness/pi-internals.js";
+
+/** The value a script receives: `structuredOutput` when declared, else the text. */
+function scriptValue(tool: ToolRegistration, result: ToolExecutionResult): unknown {
+	const structured = (result as { readonly structuredOutput?: unknown }).structuredOutput;
+	const text = textOf(result);
+	if (result.isError === true) {
+		throw new Error(text.length > 0 ? text : structured === undefined ? `Tool "${tool.name}" failed` : JSON.stringify(structured));
+	}
+	const declares = (tool as { readonly structuredOutputSchema?: unknown }).structuredOutputSchema !== undefined;
+	if (declares && structured !== undefined) return structured;
+	return text.length > 0 ? text : (structured ?? "");
+}
 
 function textOf(result: ToolExecutionResult): string {
 	return (result.output ?? [])
@@ -98,13 +112,79 @@ async function bundledWasm(): Promise<unknown> {
  * sandbox with the wasm compiled from the bundle itself. That fallback trades
  * the deadline timer for an interrupt budget, which pi-codemode documents.
  */
-export async function createSandbox(): Promise<CodemodeSandboxBase> {
+/**
+ * `searchTools`, `describeTool`, and `describeNamespace`, as pi's own codemode exposes
+ * them to a script. They are globals, so a script calls `searchTools("…")` directly.
+ */
+function discoveryGlobals(catalog: readonly DiscoveryEntry[]): CodemodeTool[] {
+	const id = (name: string): string => toCodemodeIdentifier(name);
+	return [
+		{
+			name: "searchTools",
+			spread: true,
+			description: "Rank the tools a script can call.",
+			execute: (args: unknown) => {
+				const [query, options] = args as [unknown, { readonly limit?: number; readonly namespace?: string } | undefined];
+				if (typeof query !== "string") throw new Error("searchTools() expects a query string");
+				const limit = options?.limit ?? 10;
+				if (!Number.isInteger(limit) || limit <= 0) throw new Error("searchTools() limit must be a positive integer");
+				const wanted = query.toLowerCase();
+				return catalog
+					.filter((entry) => options?.namespace === undefined || entry.namespace === options.namespace)
+					.map((entry) => {
+						const name = id(entry.name).toLowerCase();
+						const score = name.includes(wanted) ? 2 : entry.description.toLowerCase().includes(wanted) ? 1 : 0;
+						return { entry, score };
+					})
+					.filter((match) => match.score > 0)
+					.sort((first, second) => second.score - first.score)
+					.slice(0, limit)
+					.map((match) => ({ name: id(match.entry.name), description: match.entry.description }));
+			},
+		},
+		{
+			name: "describeTool",
+			spread: true,
+			description: "Show a tool's declaration, or undefined when there is none.",
+			execute: (args: unknown) => {
+				const [name] = args as [unknown];
+				if (typeof name !== "string") throw new Error("describeTool() expects a tool name");
+				const entry = catalog.find((candidate) => candidate.name === name || id(candidate.name) === name);
+				if (entry === undefined) return undefined;
+				return `${id(entry.name)}: ${entry.description}`;
+			},
+		},
+		{
+			name: "describeNamespace",
+			spread: true,
+			description: "List the tools of an MCP namespace.",
+			execute: (args: unknown) => {
+				const [name] = args as [unknown];
+				if (typeof name !== "string") throw new Error("describeNamespace() expects a namespace name");
+				const members = catalog.filter((entry) => entry.namespace === name);
+				if (members.length === 0) return undefined;
+				return { name, tools: members.map((entry) => ({ name: id(entry.name), description: entry.description })) };
+			},
+		},
+	];
+}
+
+interface DiscoveryEntry {
+	readonly name: string;
+	readonly description: string;
+	readonly namespace?: string;
+}
+
+export async function createSandbox(globals: readonly CodemodeTool[] = []): Promise<CodemodeSandboxBase> {
 	try {
 		// `import.meta.resolve` follows the package's `import` condition, which is
 		// the only one it exports (`require` cannot see `./worker`).
-		return new CodemodeSandbox({ workerUrl: new URL(import.meta.resolve("@earendil-works/pi-codemode/worker")) });
+		return new CodemodeSandbox({
+			workerUrl: new URL(import.meta.resolve("@earendil-works/pi-codemode/worker")),
+			globals: [...globals],
+		});
 	} catch {
-		return new InlineCodemodeSandbox({ wasm: (await bundledWasm()) as never });
+		return new InlineCodemodeSandbox({ wasm: (await bundledWasm()) as never, globals: [...globals] });
 	}
 }
 
@@ -113,14 +193,27 @@ export const codemodeTool = defineTool({
 	description: CODEMODE_DESCRIPTION,
 	parameters: CODEMODE_PARAMETERS as never,
 	execute: async (args, api: ToolExecutionApi, context) => {
-		const sandbox = await createSandbox();
+		// The catalog the discovery helpers answer from, built before the sandbox so the
+		// globals can close over it.
+		const callableTools = (api.registry.tools() as readonly { tool: ToolRegistration }[])
+			.map((entry) => entry.tool)
+			.filter((tool) => tool.name !== "codemode" && callable(tool.name));
+		const catalog: DiscoveryEntry[] = callableTools.map((tool) => {
+			const entry = mcpEntries().find((candidate) => candidate.name === tool.name);
+			return {
+				name: tool.name,
+				description: tool.description ?? "",
+				...(entry === undefined ? {} : { namespace: `mcp__${entry.server}` }),
+			};
+		});
+		const sandbox = await createSandbox(discoveryGlobals(catalog));
 		try {
 			for (const { tool } of api.registry.tools() as readonly { tool: ToolRegistration }[]) {
 				if (tool.name === "codemode" || !callable(tool.name)) continue;
 				sandbox.registerTool({
 					name: tool.name,
 					...(tool.description === undefined ? {} : { description: tool.description }),
-					execute: async (toolArgs: unknown) => textOf(await tool.execute(toolArgs as never, api, context)),
+					execute: async (toolArgs: unknown) => scriptValue(tool, await tool.execute(toolArgs as never, api, context)),
 				});
 			}
 			return render(await sandbox.execute((args as { code: string }).code));

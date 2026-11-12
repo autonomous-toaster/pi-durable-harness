@@ -10,7 +10,7 @@ import { defineExtension, defineTool, type ToolExecutionApi, type ToolRegistrati
 import { createBashTool, createEditTool, createPowerShellTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { codemodeTool } from "./codemode.js";
 import { toolSearchTool } from "./tool-search.js";
-import { PI_TOOL_DEFINITIONS, type PiToolDefinition } from "./pi-definitions.js";
+import { PI_TOOL_DEFINITIONS, PI_TOOL_OUTPUT_SCHEMAS, type PiToolDefinition } from "./pi-definitions.js";
 
 /** Present durable's execution under pi's exact description and parameters (task 5.5). */
 function present(base: ToolRegistration, definition: PiToolDefinition): ToolRegistration {
@@ -18,6 +18,12 @@ function present(base: ToolRegistration, definition: PiToolDefinition): ToolRegi
 		name: base.name,
 		description: definition.description,
 		parameters: definition.parameters as never,
+		// The declaration carries the program-facing schema, which codemode needs to
+		// decide whether a script sees `structuredOutput` or the text.
+		...(() => {
+			const schema = PI_TOOL_OUTPUT_SCHEMAS[base.name];
+			return schema === undefined ? {} : { structuredOutputSchema: schema as never };
+		})(),
 		execute: (args, api, context) => base.execute(args as never, api, context),
 	});
 }
