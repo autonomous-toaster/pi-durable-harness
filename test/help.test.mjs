@@ -26,6 +26,8 @@ test("--help lists the flags and the environment", () => {
 		"--no-session",
 		"--system-prompt <text|path>",
 		"--append-system-prompt <text|path>",
+		"--skill <path>",
+		"--prompt-template <path>",
 		"--provider <name>",
 		"--thinking <level>",
 		"PI_DURABLE_DATABASE_URL",

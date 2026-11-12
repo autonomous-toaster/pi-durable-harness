@@ -40,6 +40,10 @@ export interface HarnessConfig {
 	readonly systemPrompt: string | undefined;
 	/** `--append-system-prompt`: each occurrence, in argv order, after text-or-file resolution. */
 	readonly appendSystemPrompt: readonly string[];
+	/** `--skill`: extra skill files or directories, repeatable. */
+	readonly skillPaths: readonly string[];
+	/** `--prompt-template`: extra template files or directories, repeatable. */
+	readonly promptTemplatePaths: readonly string[];
 	/** How long a deferred progress commit may stay in memory; `0` stores it at once. */
 	readonly persistWithinMs: number;
 	readonly offline: boolean;
@@ -71,12 +75,13 @@ const OPTIONS = {
 	offline: { type: "boolean" },
 	help: { type: "boolean", short: "h" },
 	// accepted for pi compatibility, consumed and ignored
+	skill: { type: "string", multiple: true },
+	"prompt-template": { type: "string", multiple: true },
+	// still accepted and ignored
 	"api-key": { type: "string" },
 	export: { type: "string" },
 	fork: { type: "string" },
 	models: { type: "string" },
-	"prompt-template": { type: "string" },
-	skill: { type: "string" },
 	theme: { type: "string" },
 } as const;
 
@@ -137,6 +142,10 @@ export function resolveConfig(
 	const systemPrompt = systemPromptRaw === undefined ? undefined : resolveTextOrFile(systemPromptRaw);
 	const appendRaw = values["append-system-prompt"];
 	const appendSystemPrompt = (Array.isArray(appendRaw) ? appendRaw : []).map((value) => resolveTextOrFile(String(value)));
+	const list = (name: string): string[] => {
+		const value = values[name];
+		return Array.isArray(value) ? value.map((item) => String(item)) : [];
+	};
 
 	const mode = text("mode");
 	if (mode !== undefined && mode !== "rpc" && mode !== "json" && mode !== "text") warnings.push(`unsupported --mode ${mode}`);
@@ -202,6 +211,8 @@ export function resolveConfig(
 		databaseUrl: env.PI_DURABLE_DATABASE_URL,
 		systemPrompt,
 		appendSystemPrompt,
+		skillPaths: list("skill"),
+		promptTemplatePaths: list("prompt-template"),
 		persistWithinMs,
 		offline: flag("offline") || env.PI_OFFLINE === "1",
 		help: flag("help"),

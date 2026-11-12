@@ -3,7 +3,7 @@
  * open the durable engine, and serve pi-RPC on stdin/stdout.
  */
 import { DefaultResourceLoader, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { resolveConfig } from "./harness/config.js";
+import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine } from "./harness/engine.js";
 import { resolveSession } from "./harness/session.js";
 import { runOneShot } from "./harness/oneshot.js";
@@ -61,6 +61,8 @@ Model:
 Prompt:
   --system-prompt <text|path>          replace the built-in preamble
   --append-system-prompt <text|path>   append to it; repeatable
+  --skill <path>                       load a skill file or directory; repeatable
+  --prompt-template <path>             load a template file or directory; repeatable
   @path                                include a text file or an image
   --                                   end options; everything after is a prompt
 
@@ -69,7 +71,7 @@ Other:
   --offline             no network activity
 
 Accepted for pi compatibility and not acted on:
-  --api-key, --export, --fork, --models, --prompt-template, --skill, --theme
+  --api-key, --export, --fork, --models, --theme
 
 Environment:
   PI_DURABLE_DATABASE_URL        PostgreSQL URL; unset stores in SQLite
@@ -89,7 +91,7 @@ async function readStdin(): Promise<string> {
 
 /** Re-read resources with the paths an extension discovered, without reloading extensions. */
 async function reloadResources(
-	config: { readonly cwd: string; readonly agentDir: string },
+	config: HarnessConfig,
 	settingsManager: SettingsManager,
 	discovered: DiscoveredResources,
 ): Promise<DefaultResourceLoader> {
@@ -98,8 +100,8 @@ async function reloadResources(
 		agentDir: config.agentDir,
 		settingsManager,
 		noExtensions: true,
-		additionalSkillPaths: [...discovered.skillPaths],
-		additionalPromptTemplatePaths: [...discovered.promptPaths],
+		additionalSkillPaths: [...config.skillPaths, ...discovered.skillPaths],
+		additionalPromptTemplatePaths: [...config.promptTemplatePaths, ...discovered.promptPaths],
 	});
 	await loader.reload({ resolveProjectTrust: async () => settingsManager.isProjectTrusted() });
 	return loader;
@@ -134,6 +136,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 		agentDir: config.agentDir,
 		settingsManager,
 		noExtensions: false,
+		additionalSkillPaths: [...config.skillPaths],
+		additionalPromptTemplatePaths: [...config.promptTemplatePaths],
 	});
 	await loader.reload({ resolveProjectTrust: async () => settingsManager.isProjectTrusted() });
 

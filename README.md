@@ -196,6 +196,8 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `-n, --name <name>` | Display name; not part of the identity |
 | `--tenant <name>` | Tenant label (default `default`) |
 | `--no-session` | Ephemeral in-memory session |
+| `--skill <path>` | Load a skill file or directory (repeatable) |
+| `--prompt-template <path>` | Load a prompt template file or directory (repeatable) |
 | `--session-dir <dir>` | Directory for local SQLite sessions |
 | `--provider <name>` / `--model <pattern>` / `--thinking <level>` | Initial model / thinking level |
 | `--offline` / `-h, --help` | Offline mode / usage |
