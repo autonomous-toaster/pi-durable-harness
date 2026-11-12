@@ -150,9 +150,11 @@ podman rm -f harness-pg
 
 Notes:
 
-- The **session key** (`--session-id demo`, `--session`, or `-n/--name`) selects the schema, so the same key resumes the same conversation from any working directory; the working directory only picks the default key when none is given.
-- Without `--session-id`, the key defaults to the working directory name, so two different folders get two different sessions.
-- While one process holds a session, a second process opening the same key is refused (`pg_advisory_lock`); `--no-session` uses in-memory storage and ignores PostgreSQL.
+- The **session id** (`--session-id demo`, `--session demo`) is the whole identity, so the same id in two directories is two sessions and no directory can collide with another by name.
+- With no session flag, a launch **starts a new session** with a fresh UUID. `-c` opens the most recently used session for the current tenant and working directory.
+- `-n/--name` is a display name, never identity.
+- `--tenant <name>` (default `default`) labels the session. The tenant is data: it names the container and, under PostgreSQL, a catalog row — no schema or table per tenant.
+- Two sessions in one directory run at the same time: each is its own container. A second process opening the *same* session is refused (`pg_advisory_lock`); `--no-session` uses in-memory storage and ignores PostgreSQL.
 
 ## Startup contract
 
@@ -170,8 +172,10 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `--` | Stop option parsing, so a prompt may begin with `-` |
 | `@path` | Include a text file or an image in the first prompt |
 | piped stdin | Prepended to the first prompt when stdin is not a terminal |
-| `--session-id <id>` / `--session <id>` / `-n, --name <name>` | Session key (selects the durable session) |
-| `-c, --continue` | Continue the session for the working directory |
+| `--session-id <id>` / `--session <id>` | Open this session in this directory, or create it (pi's id rule) |
+| `-c, --continue` | Open the newest session for this tenant and working directory |
+| `-n, --name <name>` | Display name; not part of the identity |
+| `--tenant <name>` | Tenant label (default `default`) |
 | `--no-session` | Ephemeral in-memory session |
 | `--session-dir <dir>` | Directory for local SQLite sessions |
 | `--provider <name>` / `--model <pattern>` / `--thinking <level>` | Initial model / thinking level |
@@ -184,6 +188,7 @@ Environment variables:
 | Variable | Effect |
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
+| `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `harness`). |
 | `PI_DURABLE_PERSIST_WITHIN_MS` | How long a deferred progress commit may stay in memory before it is stored. Default `0` (store each partial at once). A non-zero value batches streamed progress and loses up to that much on a crash. |
 | `PI_CODING_AGENT_DIR` | Config directory (default `~/.pi/agent`); tilde is expanded. |
 | `PI_CODING_AGENT_SESSION_DIR` | Overrides the local session directory. |
@@ -229,8 +234,8 @@ Storage is selected by configuration and is invisible to the client.
 
 | Backend | When | Notes |
 | --- | --- | --- |
-| **PostgreSQL** | `PI_DURABLE_DATABASE_URL` set | One schema per session plus a catalog; a per-session `pg_advisory_lock` is the cross-process single writer. |
-| **SQLite** | default | Local file at `<sessionDir>/<session-key>.sqlite`, via `node:sqlite`. |
+| **PostgreSQL** | `PI_DURABLE_DATABASE_URL` set | One schema (`PI_DURABLE_PG_SCHEMA`) for every session, a table prefix per session, and a `harness_sessions` catalog holding `(tenant, cwd, session, last_used)` for `-c`. The `pg_advisory_lock` keys on schema and prefix, so two sessions open together and a second writer of one session is refused. |
+| **SQLite** | default | One file per session at `<sessionDir>/<cwd>/<tenant>__<session>.sqlite`, via `node:sqlite`. The directory groups a working directory's sessions and the file's modification time answers `-c`. |
 | **Memory** | `--no-session` | Ephemeral. |
 
 PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. Durable's own migrations run through the facade. It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.

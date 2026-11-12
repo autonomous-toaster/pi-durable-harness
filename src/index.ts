@@ -2,10 +2,10 @@
  * Harness entry point: resolve the startup contract, load pi's resources,
  * open the durable engine, and serve pi-RPC on stdin/stdout.
  */
-import { basename } from "node:path";
 import { DefaultResourceLoader, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { resolveConfig } from "./harness/config.js";
 import { HarnessEngine } from "./harness/engine.js";
+import { resolveSession } from "./harness/session.js";
 import { runOneShot } from "./harness/oneshot.js";
 import type { PromptResources } from "./harness/prompt.js";
 import {
@@ -66,11 +66,21 @@ export async function main(argv: readonly string[]): Promise<void> {
 		process.stdout.write(USAGE);
 		return;
 	}
+	// A malformed session id cannot be opened, and rewriting it would silently
+	// continue the wrong session (task 1.3).
+	if (config.sessionError !== undefined) {
+		process.stderr.write(`durable-rpc: ${config.sessionError}\n`);
+		process.exitCode = 1;
+		return;
+	}
 	// An explicit RPC mode ignores positional arguments instead of refusing them:
 	// the config already warned, and pi's own resolver serves RPC either way. A
 	// stray token must never keep a client from reaching the server.
 
-	const key = config.sessionKey ?? config.name ?? basename(config.cwd);
+	// Resolve the session before storage opens: explicit id, newest for `-c`, or new.
+	const resolved = await resolveSession(config);
+	if (resolved.warning !== undefined) process.stderr.write(`durable-rpc: ${resolved.warning}\n`);
+	const key = resolved.id;
 	const modelRuntime = await ModelRuntime.create();
 	const settingsManager = SettingsManager.create(config.cwd);
 	const loader = new DefaultResourceLoader({

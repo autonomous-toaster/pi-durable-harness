@@ -23,6 +23,12 @@ export interface HarnessConfig {
 	readonly sessionDir: string;
 	readonly sessionKey: string | undefined;
 	readonly continueSession: boolean;
+	/** `--tenant`: labels the session; the tenant is data, not a namespace. */
+	readonly tenant: string;
+	/** The one PostgreSQL schema every session opens inside. */
+	readonly schema: string;
+	/** Set when the session id breaks pi's rule; the launch must not continue. */
+	readonly sessionError: string | undefined;
 	readonly ephemeral: boolean;
 	readonly provider: string | undefined;
 	readonly model: string | undefined;
@@ -67,12 +73,11 @@ function resolveTextOrFile(value: string): string {
 
 const VALUE_FLAGS: Readonly<Record<string, keyof HarnessConfig | "mode">> = {
 	"--mode": "mode",
-	"--session-id": "sessionKey",
-	"--session": "sessionKey",
 	"--session-dir": "sessionDir",
 	"--provider": "provider",
 	"--model": "model",
 	"--thinking": "thinking",
+	"--tenant": "tenant",
 	"--name": "name",
 	"-n": "name",
 };
@@ -100,15 +105,23 @@ export function resolveConfig(
 		}
 		if (!optionsEnded && argument.startsWith("-")) {
 			// pi consumes the next token unconditionally for these, and
-			// `--append-system-prompt` is repeatable.
-			if (argument === "--system-prompt" || argument === "--append-system-prompt") {
+			// `--append-system-prompt` is repeatable. The session flags take theirs
+			// verbatim too, so a malformed id reaches validation instead of being
+			// reported as a missing value (task 1.3).
+			if (
+				argument === "--system-prompt" ||
+				argument === "--append-system-prompt" ||
+				argument === "--session-id" ||
+				argument === "--session"
+			) {
 				const value = argv[index + 1];
 				if (value === undefined) {
 					warnings.push(`missing value for ${argument}`);
 					continue;
 				}
 				if (argument === "--system-prompt") systemPrompt = resolveTextOrFile(value);
-				else appendSystemPrompt.push(resolveTextOrFile(value));
+				else if (argument === "--append-system-prompt") appendSystemPrompt.push(resolveTextOrFile(value));
+				else values.sessionKey = value;
 				index += 1;
 				continue;
 			}
@@ -139,8 +152,15 @@ export function resolveConfig(
 	if (flags.has("--help") || flags.has("-h")) warnings.length = 0;
 
 	// `--session` may name a path or an id; both are treated as the session key.
-	const sessionKey = values.sessionKey ?? values.name;
+	// The name is a display name; identity comes only from the session flags (task 1.4).
+	const sessionKey = values.sessionKey;
 	const ephemeral = flags.has("--no-session");
+	const tenant = values.tenant ?? "default";
+	const schema = env.PI_DURABLE_PG_SCHEMA ?? "harness";
+	const sessionError =
+		sessionKey !== undefined && !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(sessionKey)
+			? `invalid session id ${JSON.stringify(sessionKey)}: use letters, numbers, ".", "_" and "-", starting and ending with a letter or number`
+			: undefined;
 
 	// Deferred-progress window (task 6.1). An invalid value warns and falls back to 0.
 	let persistWithinMs = 0;
@@ -169,6 +189,9 @@ export function resolveConfig(
 		sessionDir: expandTilde(values.sessionDir ?? env.PI_CODING_AGENT_SESSION_DIR ?? join(agentDir, "sessions")),
 		sessionKey,
 		continueSession: flags.has("--continue") || flags.has("-c"),
+		tenant,
+		schema,
+		sessionError,
 		ephemeral,
 		provider: values.provider,
 		model: values.model,

@@ -299,7 +299,12 @@ export class HarnessSession implements RpcSession {
 
 	async startEvents(sink: (record: unknown) => void): Promise<() => Promise<void>> {
 		const stream = await this.#engine.watchEvents();
-		const projector = new EventProjector(dispatchTo(this.#bus, sink), () => this.#engine.isQuiescent());
+		const dispatch = dispatchTo(this.#bus, sink);
+		const projector = new EventProjector((record) => {
+			// A settled run makes this session the most recently used one (task 2.3).
+			if ((record as { type?: string }).type === "agent_settled") this.#engine.markActivity();
+			dispatch(record);
+		}, () => this.#engine.isQuiescent());
 		projector.seed(stream.value);
 		const queue = new RevisionQueue(projector);
 		this.#bus?.dispatch("session_start", { type: "session_start", sessionId: this.sessionId });

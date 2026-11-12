@@ -2,7 +2,6 @@
  * The durable engine: one Harness over one session, wired from pi's loaded
  * resources (tasks 3.4, 8.1, 8.2).
  */
-import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -33,6 +32,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Pool } from "pg";
 import pg from "pg";
 import { openPostgresStorage } from "../storage/postgres/storage.js";
+import { sessionFile, sessionPrefix, stampSession } from "./session.js";
 import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
@@ -89,28 +89,40 @@ class ExecutionEnvs {
 	};
 }
 
-function identifier(key: string): string {
-	const slug = key.toLowerCase().replaceAll(/[^a-z0-9_]/g, "_").slice(0, 40);
-	const digest = createHash("sha256").update(key).digest("hex").slice(0, 12);
-	return `s_${slug}_${digest}`;
+interface OpenedStorage {
+	readonly storage: Storage;
+	/** Record that the session was used now; PostgreSQL only, since SQLite has its mtime. */
+	readonly stamp?: () => Promise<void>;
+	close(): Promise<void>;
 }
 
-async function openStorage(config: HarnessConfig, key: string): Promise<{ storage: Storage; close(): Promise<void> }> {
+/**
+ * Open one session's storage (tasks 2.1-2.3). The container is the session; the
+ * working directory and tenant only name it.
+ */
+async function openStorage(config: HarnessConfig, key: string): Promise<OpenedStorage> {
 	if (config.ephemeral) {
 		return { storage: new MemoryStorage(), close: async () => {} };
 	}
 	if (config.databaseUrl !== undefined) {
 		const pool: Pool = new pg.Pool({ connectionString: config.databaseUrl });
-		const storage = await openPostgresStorage({ pool, schema: identifier(key) });
+		const storage = await openPostgresStorage({
+			pool,
+			schema: config.schema,
+			prefix: sessionPrefix(config.tenant, key),
+		});
+		const stamp = () => stampSession(config, key);
+		await stamp().catch(() => {});
 		return {
 			storage,
+			stamp,
 			close: async () => {
 				await storage.close(CONTEXT);
 				await pool.end();
 			},
 		};
 	}
-	const path = join(config.sessionDir, `${identifier(key)}.sqlite`);
+	const path = sessionFile(config, key);
 	await mkdir(dirname(path), { recursive: true });
 	const storage = await openNodeSqliteStorage(path);
 	return { storage, close: () => storage.close(CONTEXT) };
@@ -133,6 +145,8 @@ export class HarnessEngine {
 	readonly #settingsManager: SettingsManager;
 	readonly #modelRuntime: ModelRuntime;
 	readonly #closeStorage: () => Promise<void>;
+	/** Records that the session was used; PostgreSQL keeps a catalog, SQLite has mtime. */
+	readonly #stamp: (() => Promise<void>) | undefined;
 	readonly #resources: PromptResources;
 	readonly #registry: import("@earendil-works/pi-durable").Registry;
 	/** The tools the conversation declares, captured at open (extension action reads). */
@@ -153,6 +167,7 @@ export class HarnessEngine {
 		resources: PromptResources;
 		registry: import("@earendil-works/pi-durable").Registry;
 		closeStorage: () => Promise<void>;
+		stamp?: () => Promise<void>;
 	}) {
 		this.#harness = options.harness;
 		this.#conversation = options.conversation;
@@ -161,6 +176,7 @@ export class HarnessEngine {
 		this.#resources = options.resources;
 		this.#registry = options.registry;
 		this.#closeStorage = options.closeStorage;
+		this.#stamp = options.stamp;
 	}
 
 	static async open(options: HarnessEngineOptions): Promise<HarnessEngine> {
@@ -233,6 +249,7 @@ export class HarnessEngine {
 				resources,
 				registry,
 				closeStorage: opened.close,
+				...(opened.stamp === undefined ? {} : { stamp: opened.stamp }),
 			});
 			opened2.#declaredTools = declared.map((tool) => ({
 				name: tool.name,
@@ -412,6 +429,8 @@ export class HarnessEngine {
 	/** Submit one prompt and resolve to whether it was answered (task 2.2). */
 	async submitAndWait(content: string | readonly unknown[]): Promise<boolean> {
 		const settled = await (await this.submit(content)).wait(CONTEXT);
+		// A run ended, so this session is the most recently used one (task 2.3).
+		this.markActivity();
 		return settled.status === "done";
 	}
 
@@ -468,6 +487,7 @@ export class HarnessEngine {
 			resources: this.#resources,
 			registry: this.#registry,
 			closeStorage: async () => {},
+			...(this.#stamp === undefined ? {} : { stamp: this.#stamp }),
 		});
 	}
 
@@ -537,6 +557,11 @@ export class HarnessEngine {
 	async newConversation(): Promise<Conversation> {
 		const conversation = await this.#harness.createConversation({ ownership: { kind: "ownerless" } }, CONTEXT);
 		return conversation;
+	}
+
+	/** Record that the session was used now (task 2.3). */
+	markActivity(): void {
+		void this.#stamp?.().catch(() => {});
 	}
 
 	async close(): Promise<void> {
