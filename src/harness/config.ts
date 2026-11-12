@@ -5,6 +5,7 @@
  * only a value-less flag whose value is missing is reported on stderr.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -46,16 +47,64 @@ export interface HarnessConfig {
 	readonly warnings: readonly string[];
 }
 
-/** Flags pi 1.5.2 parses with a value but the harness does not act on. */
-const IGNORED_VALUE_FLAGS: ReadonlySet<string> = new Set([
-	"--api-key",
-	"--export",
-	"--fork",
-	"--models",
-	"--prompt-template",
-	"--skill",
-	"--theme",
-]);
+/**
+ * Every option the harness understands, declared once. Flags pi parses with a
+ * value that the harness does not act on are `string` here too, so their value
+ * is consumed instead of leaking into the prompts.
+ */
+const OPTIONS = {
+	// acted on
+	mode: { type: "string" },
+	"session-id": { type: "string" },
+	session: { type: "string" },
+	"session-dir": { type: "string" },
+	provider: { type: "string" },
+	model: { type: "string" },
+	thinking: { type: "string" },
+	tenant: { type: "string" },
+	name: { type: "string", short: "n" },
+	"system-prompt": { type: "string" },
+	"append-system-prompt": { type: "string", multiple: true },
+	continue: { type: "boolean", short: "c" },
+	"no-session": { type: "boolean" },
+	print: { type: "boolean", short: "p" },
+	offline: { type: "boolean" },
+	help: { type: "boolean", short: "h" },
+	// accepted for pi compatibility, consumed and ignored
+	"api-key": { type: "string" },
+	export: { type: "string" },
+	fork: { type: "string" },
+	models: { type: "string" },
+	"prompt-template": { type: "string" },
+	skill: { type: "string" },
+	theme: { type: "string" },
+} as const;
+
+type Parsed = {
+	readonly values: Readonly<Record<string, string | boolean | readonly string[] | undefined>>;
+	readonly positionals: readonly string[];
+};
+
+/**
+ * `parseArgs` throws when a known string option ends the line with no value;
+ * that is the one case the harness reports as a warning and drops, so the rest
+ * of the line still applies.
+ */
+function parse(argv: readonly string[], warnings: string[]): Parsed {
+	const args: string[] = [];
+	for (let index = 0; index < argv.length; index += 1) {
+		const argument = argv[index]!;
+		const name = argument.startsWith("--") && !argument.includes("=") ? argument.slice(2) : undefined;
+		if (name !== undefined && name in OPTIONS && OPTIONS[name as keyof typeof OPTIONS].type === "string") {
+			if (argv[index + 1] === undefined) {
+				warnings.push(`missing value for ${argument}`);
+				continue;
+			}
+		}
+		args.push(argument);
+	}
+	return parseArgs({ args, options: OPTIONS, allowPositionals: true, strict: false }) as Parsed;
+}
 
 /**
  * A `--system-prompt` value is text or the path of an existing file (pi's
@@ -89,73 +138,28 @@ export function resolveConfig(
 ): HarnessConfig {
 	const agentDir = expandTilde(env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
 	const warnings: string[] = [];
-	const values: Record<string, string> = {};
-	const flags = new Set<string>();
-	const prompts: string[] = [];
-	let optionsEnded = false;
+	const parsed = parse(argv, warnings);
+	const values = parsed.values;
+	const flag = (name: string): boolean => values[name] === true;
+	const text = (name: string): string | undefined => (typeof values[name] === "string" ? (values[name] as string) : undefined);
+	const prompts = [...parsed.positionals];
 
-	let systemPrompt: string | undefined;
-	const appendSystemPrompt: string[] = [];
+	const systemPromptRaw = text("system-prompt");
+	const systemPrompt = systemPromptRaw === undefined ? undefined : resolveTextOrFile(systemPromptRaw);
+	const appendRaw = values["append-system-prompt"];
+	const appendSystemPrompt = (Array.isArray(appendRaw) ? appendRaw : []).map((value) => resolveTextOrFile(String(value)));
 
-	for (let index = 0; index < argv.length; index++) {
-		const argument = argv[index]!;
-		if (!optionsEnded && argument === "--") {
-			optionsEnded = true;
-			continue;
-		}
-		if (!optionsEnded && argument.startsWith("-")) {
-			// pi consumes the next token unconditionally for these, and
-			// `--append-system-prompt` is repeatable. The session flags take theirs
-			// verbatim too, so a malformed id reaches validation instead of being
-			// reported as a missing value (task 1.3).
-			if (
-				argument === "--system-prompt" ||
-				argument === "--append-system-prompt" ||
-				argument === "--session-id" ||
-				argument === "--session"
-			) {
-				const value = argv[index + 1];
-				if (value === undefined) {
-					warnings.push(`missing value for ${argument}`);
-					continue;
-				}
-				if (argument === "--system-prompt") systemPrompt = resolveTextOrFile(value);
-				else if (argument === "--append-system-prompt") appendSystemPrompt.push(resolveTextOrFile(value));
-				else values.sessionKey = value;
-				index += 1;
-				continue;
-			}
-			if (IGNORED_VALUE_FLAGS.has(argument)) {
-				if (argv[index + 1] !== undefined) index += 1;
-				continue;
-			}
-			const target = VALUE_FLAGS[argument];
-			if (target !== undefined) {
-				const value = argv[index + 1];
-				if (value === undefined || value.startsWith("-")) {
-					warnings.push(`missing value for ${argument}`);
-					continue;
-				}
-				values[target] = value;
-				index += 1;
-				continue;
-			}
-			flags.add(argument);
-			continue;
-		}
-		prompts.push(argument);
-	}
-
-	const mode = values.mode;
+	const mode = text("mode");
 	if (mode !== undefined && mode !== "rpc" && mode !== "json" && mode !== "text") warnings.push(`unsupported --mode ${mode}`);
 	if (prompts.length > 0 && mode === "rpc") warnings.push("RPC mode takes prompts through the prompt command, not as arguments");
-	if (flags.has("--help") || flags.has("-h")) warnings.length = 0;
+	if (flag("help")) warnings.length = 0;
 
 	// `--session` may name a path or an id; both are treated as the session key.
 	// The name is a display name; identity comes only from the session flags (task 1.4).
-	const sessionKey = values.sessionKey;
-	const ephemeral = flags.has("--no-session");
-	const tenant = values.tenant ?? "default";
+	// `--session-id` wins when both are given; the name is never identity (task 1.4).
+	const sessionKey = text("session-id") ?? text("session");
+	const ephemeral = flag("no-session");
+	const tenant = text("tenant") ?? "default";
 	const schema = env.PI_DURABLE_PG_SCHEMA ?? "harness";
 	const sessionError =
 		sessionKey !== undefined && !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(sessionKey)
@@ -176,33 +180,42 @@ export function resolveConfig(
 	// An explicit RPC mode never yields to a positional argument: a stray token
 	// is a warning, not a mode switch. This keeps an unknown value-taking flag
 	// from silently turning the server into a one-shot print.
+	const printMode = flag("print");
 	const interfaceName: HarnessConfig["interfaceName"] =
-		mode === "rpc" ? "rpc" : prompts.length === 0 ? "rpc" : mode === "json" ? "json" : "print";
+		mode === "rpc"
+			? "rpc"
+			: printMode
+				? "print"
+				: prompts.length === 0
+					? "rpc"
+					: mode === "json"
+						? "json"
+						: "print";
 
 	return {
 		mode,
 		interfaceName,
 		prompts,
-		print: flags.has("--print") || flags.has("-p"),
+		print: printMode,
 		cwd,
 		agentDir,
-		sessionDir: expandTilde(values.sessionDir ?? env.PI_CODING_AGENT_SESSION_DIR ?? join(agentDir, "sessions")),
+		sessionDir: expandTilde(text("session-dir") ?? env.PI_CODING_AGENT_SESSION_DIR ?? join(agentDir, "sessions")),
 		sessionKey,
-		continueSession: flags.has("--continue") || flags.has("-c"),
+		continueSession: flag("continue"),
 		tenant,
 		schema,
 		sessionError,
 		ephemeral,
-		provider: values.provider,
-		model: values.model,
-		thinking: values.thinking,
-		name: values.name,
+		provider: text("provider"),
+		model: text("model"),
+		thinking: text("thinking"),
+		name: text("name"),
 		databaseUrl: env.PI_DURABLE_DATABASE_URL,
 		systemPrompt,
 		appendSystemPrompt,
 		persistWithinMs,
-		offline: flags.has("--offline") || env.PI_OFFLINE === "1",
-		help: flags.has("--help") || flags.has("-h"),
+		offline: flag("offline") || env.PI_OFFLINE === "1",
+		help: flag("help"),
 		warnings,
 	};
 }

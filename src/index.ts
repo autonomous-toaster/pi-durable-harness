@@ -32,7 +32,53 @@ import { HarnessSession } from "./rpc/session.js";
 import { loadMcpTools } from "./tools/mcp.js";
 import type { RegisteredMcpServer } from "./tools/exposure.js";
 
-const USAGE = "pi-durable-harness — pi-RPC-compatible harness backed by Pi Durable\n";
+const USAGE = `pi-durable-harness — pi-RPC-compatible harness backed by Pi Durable
+
+Usage:
+  pi-durable-harness [options] [prompt ...]
+  pi-durable-harness --mode rpc              serve pi's RPC protocol on stdin/stdout
+
+Modes:
+  --mode rpc            serve RPC; the default when no prompt is given
+  --mode text           run the prompts once and print the final answer
+  --mode json           run the prompts once and stream JSONL records
+  -p, --print           print the final answer (shorthand for --mode text)
+
+Session:
+  --session-id <id>     open this session in this directory, or create it
+  --session <id>        the same as --session-id
+  -c, --continue        open the newest session for this directory
+  -n, --name <name>     display name; not part of the identity
+  --tenant <name>       tenant label (default: default)
+  --session-dir <dir>   where SQLite sessions live
+  --no-session          keep the session in memory and store nothing
+
+Model:
+  --provider <name>     provider for the first request
+  --model <pattern>     model id or pattern
+  --thinking <level>    off, minimal, low, medium, high, xhigh, max
+
+Prompt:
+  --system-prompt <text|path>          replace the built-in preamble
+  --append-system-prompt <text|path>   append to it; repeatable
+  @path                                include a text file or an image
+  --                                   end options; everything after is a prompt
+
+Other:
+  -h, --help            this text
+  --offline             no network activity
+
+Accepted for pi compatibility and not acted on:
+  --api-key, --export, --fork, --models, --prompt-template, --skill, --theme
+
+Environment:
+  PI_DURABLE_DATABASE_URL        PostgreSQL URL; unset stores in SQLite
+  PI_DURABLE_PG_SCHEMA           schema for PostgreSQL sessions (default: harness)
+  PI_DURABLE_PERSIST_WITHIN_MS   deferred progress window; 0 stores each partial
+  PI_CODING_AGENT_DIR            config directory (default: ~/.pi/agent)
+  PI_CODING_AGENT_SESSION_DIR    overrides the SQLite session directory
+  PI_OFFLINE                     no network activity (same as --offline)
+`;
 
 /** Read all of piped stdin (task 1.2); the caller only does this for a non-terminal stdin. */
 async function readStdin(): Promise<string> {
