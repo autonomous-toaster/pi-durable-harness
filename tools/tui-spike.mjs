@@ -1,84 +1,40 @@
 #!/usr/bin/env node
-// Spike for tui-parity (tasks 1.1, 1.2): boot pi's InteractiveMode against a
-// recording runtime and report which members it asks for, so the adapter's real
-// surface is measured instead of read off the class declarations.
-//
-// The services are pi's own (SettingsManager, DefaultResourceLoader,
-// ModelRuntime); only `session` and `sessionManager` are fakes. The terminal is
-// headless, so the TUI renders into a buffer.
-import { InteractiveMode, ModelRuntime, SettingsManager, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+// Spike for tui-parity (tasks 1.1, 1.2): drive pi's InteractiveMode from the real
+// durable engine, through the TUI adapter, and report what it asks for and how
+// far it gets. A headless terminal means the render is a buffer, not a screen.
+import { InteractiveMode } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { HarnessEngine } from "../dist/harness/engine.js";
+import { createTuiRuntime } from "../dist/harness/tui/adapter.js";
+import { resolveConfig } from "../dist/harness/config.js";
 
 const asked = new Set();
-const booleans = /^(is[A-Z]|has[A-Z]|auto[A-Z]|uses[A-Z])/;
-/** Members the TUI calls; the rest are read as values. */
-const calls = {
-	session: new Set([
-		"prompt", "steer", "followUp", "abort", "clearQueue", "setModel", "setThinkingLevel", "setScopedModels",
-		"getAvailableThinkingLevels", "getContextUsage", "getActiveToolNames", "setActiveToolsByName", "getAllTools",
-		"getToolDefinition", "getCallableToolNames", "rename", "navigateTree", "sendCustomMessage", "sendUserMessage",
-		"refreshContext", "subscribe", "dispose", "getSteeringMessages", "getFollowUpMessages", "parseSkillBlock",
-	]),
-	sessionManager: new Set([
-		"getEntries", "getBranch", "getTree", "buildContextEntries", "appendCustomEntry", "appendLabelChange",
-		"getSessionId", "getSessionName", "getSessionFile", "getSessionDir", "getCwd", "getEntryCount", "getLeafId",
-	]),
-	services: new Set([]),
-	"services.extensionRunner": new Set(["emit", "getToolRenderers", "getMessageRenderers"]),
-	"session.state": new Set([]),
-	"session.agent": new Set([]),
-	runtime: new Set([
-		"setBeforeSessionInvalidate", "setRebindSession", "switchSession", "newSession", "fork", "importFromJsonl", "dispose",
-	]),
-};
+const PROMPT = process.env.TUI_SPIKE_PROMPT ?? "Reply with exactly: ok";
 
-/** A benign value for a read member, chosen from its name. */
-function defaultFor(name) {
-	if (booleans.test(name)) return false;
-	if (/s$/.test(name) || name === "messages") return [];
-	return undefined;
-}
-
-/** Log every member read, and answer with something an early boot can survive. */
-function recording(label, overrides = {}) {
-	return new Proxy(overrides, {
-		get(target, property) {
-			if (typeof property === "symbol") return target[property];
-			const name = String(property);
-			if (Object.hasOwn(target, name)) return target[name];
-			asked.add(`${label}.${name}`);
-			if (calls[label]?.has(name)) {
-				// A call: answer with what its name promises.
-				return (..._args) => (name === "subscribe" ? () => {} : name.startsWith("get") || name === "buildContextEntries" ? [] : undefined);
-			}
-			const value = defaultFor(name);
-			if (value !== undefined) return value;
-			return undefined;
-		},
-		has() {
-			return true;
+/** Log every member the TUI reads, then answer from the adapter. */
+function recording(target, label) {
+	return new Proxy(target, {
+		get(object, property, receiver) {
+			if (typeof property === "symbol") return Reflect.get(object, property, receiver);
+			asked.add(`${label}.${String(property)}`);
+			return Reflect.get(object, property, receiver);
 		},
 	});
 }
 
 class HeadlessTerminal {
 	#onInput;
-	#onResize;
 	constructor() {
 		this.output = [];
 		this.columns = 120;
 		this.rows = 40;
 		this.kittyProtocolActive = false;
 	}
-	start(onInput, onResize) {
-		this.#onInput = onInput;
-		this.#onResize = onResize;
-	}
+	start(onInput) { this.#onInput = onInput; }
 	stop() {}
 	restoreOnExit() {}
 	async drainInput() {}
-	write(data) {
-		this.output.push(data);
-	}
+	write(data) { this.output.push(data); }
 	moveBy() {}
 	hideCursor() {}
 	showCursor() {}
@@ -88,66 +44,64 @@ class HeadlessTerminal {
 	setTitle() {}
 	setProgress() {}
 	setProgramStatus() {}
-	get rendered() {
-		return this.output.join("");
-	}
-	type(data) {
-		this.#onInput?.(data);
-	}
-	resize() {
-		this.#onResize?.();
-	}
+	get rendered() { return this.output.join(""); }
+	type(data) { this.#onInput?.(data); }
 }
 
-const cwd = process.cwd();
+const config = resolveConfig(
+	["--mode", "rpc", "--no-session", "--provider", "ollama-cloud", "--model", "deepseek-v4.1-flash:cloud"],
+	process.env,
+	process.cwd(),
+);
 const modelRuntime = await ModelRuntime.create();
-const settingsManager = SettingsManager.create(cwd);
-const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: `${process.env.HOME}/.pi/agent`, settingsManager });
-await resourceLoader.reload({ resolveProjectTrust: async () => false });
-
-const services = recording("services", {
+const settingsManager = SettingsManager.create(config.cwd);
+const loader = new DefaultResourceLoader({ cwd: config.cwd, agentDir: config.agentDir, settingsManager });
+await loader.reload({ resolveProjectTrust: async () => false });
+const resources = {
+	cwd: config.cwd,
+	agentsFiles: loader.getAgentsFiles().agentsFiles,
+	skills: loader.getSkills().skills,
+	prompts: loader.getPrompts().prompts,
+	systemPrompt: loader.getSystemPrompt(),
+	appendSystemPrompt: loader.getAppendSystemPrompt(),
+};
+const engine = await HarnessEngine.open({ config, key: "tui-spike", modelRuntime, settingsManager, resources });
+const runtime = createTuiRuntime(engine, {
+	cwd: config.cwd,
+	sessionId: "tui-spike",
 	settingsManager,
-	resourceLoader,
+	resourceLoader: loader,
 	modelRuntime,
-	extensionRunner: recording("services.extensionRunner"),
+	thinkingLevel: "off",
 });
-const sessionManager = recording("sessionManager", { getCwd: () => cwd, getSessionId: () => "spike" });
-const session = recording("session", {
-	sessionManager,
-	modelRuntime,
-	resourceLoader,
-	settingsManager,
-	cwd,
-	sessionFile: undefined,
-	sessionName: undefined,
-	state: recording("session.state"),
-	agent: recording("session.agent"),
-	extensionRunner: services.extensionRunner,
-});
-const runtimeHost = recording("runtime", {
-	cwd,
-	session,
-	services,
-	sessionManager,
-	diagnostics: [],
-	modelFallbackMessage: undefined,
-});
+await runtime.refresh();
+await runtime.startWatching();
 
 const terminal = new HeadlessTerminal();
-const mode = new InteractiveMode(runtimeHost, { terminal, verbose: false });
-let failure;
-try {
-	await Promise.race([mode.run(), new Promise((resolve) => setTimeout(resolve, 3000))]);
-} catch (error) {
-	failure = error;
-} finally {
-	await mode.dispose?.();
-}
+const mode = new InteractiveMode(recording(runtime, "runtime"), { terminal, verbose: false });
+const running = mode.run().catch((error) => ({ error }));
 
-const names = [...asked].sort();
-process.stdout.write(`\nTUI requested ${names.length} members:\n`);
-for (const name of names) process.stdout.write(`  ${name}\n`);
-if (failure !== undefined) {
-	process.stdout.write(`\nfirst failure: ${failure instanceof Error ? failure.stack : String(failure)}\n`);
-	process.exitCode = 1;
+await new Promise((resolve) => setTimeout(resolve, 1500));
+terminal.type(PROMPT);
+terminal.type("\r");
+
+// Wait for the run to settle, then render again.
+for (let attempt = 0; attempt < 120; attempt += 1) {
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	if (await engine.isQuiescent()) break;
 }
+await new Promise((resolve) => setTimeout(resolve, 1500));
+
+const result = await Promise.race([running, Promise.resolve(undefined)]);
+const entries = await engine.entries();
+const answer = await engine.lastAssistantText();
+const plain = terminal.rendered
+	.replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+	.replaceAll(/\x1b\][^\x07]*\x07/g, "")
+	.replaceAll(/\x1b_G[^\\]*\\/g, "");
+process.stdout.write(`\n--- recorded members (${asked.size}) ---\n${[...asked].sort().join("\n")}\n`);
+process.stdout.write(`\nentries: ${entries.length}  answer: ${JSON.stringify(answer)}\n`);
+process.stdout.write(`\n--- rendered (plain, tail) ---\n${plain.slice(-2500)}\n`);
+if (result?.error !== undefined) process.stdout.write(`\nMODE ERROR: ${result.error?.stack ?? result.error}\n`);
+await engine.close().catch(() => {});
+process.exit(0);

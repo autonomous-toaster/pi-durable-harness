@@ -1,7 +1,7 @@
 ## 1. Spike (spec: `tui-parity`)
 
-- [ ] 1.1 Build an incomplete runtime whose every member records its use and returns a default. Verify `InteractiveMode.run()` starts and the log lists the members requested
-- [ ] 1.2 Run a prompt through the TUI against a durable session. Verify the log names the first member the runtime cannot satisfy
+- [x] 1.1 Build an incomplete runtime whose every member records its use and returns a default. Verify `InteractiveMode.run()` starts and the log lists the members requested
+- [x] 1.2 Run a prompt through the TUI against a durable session. Verify the log names the first member the runtime cannot satisfy
 
 ## 2. TUI artifact and mode (spec: `cli-prompt-modes`)
 
@@ -16,14 +16,14 @@
 
 ## 4. Agent session adapter (spec: `tui-parity`)
 
-- [ ] 4.1 Answer the state getters from durable. Verify each agrees with its RPC equivalent
-- [ ] 4.2 Map `prompt`, `steer`, `followUp`, `abort`, and `clearQueue` onto durable submissions. Verify a prompt round trip and an abort
+- [x] 4.1 Answer the state getters from durable. Verify each agrees with its RPC equivalent
+- [x] 4.2 Map `prompt`, `steer`, `followUp`, `abort`, and `clearQueue` onto durable submissions. Verify a prompt round trip and an abort
 - [ ] 4.3 Apply `setModel`, `setThinkingLevel`, and `setScopedModels` to the durable agent. Verify a model change sticks
 - [ ] 4.4 Serve and update the tool surface through the registry. Verify a tool toggle reaches the model
 
 ## 5. Event synthesis (spec: `tui-parity`)
 
-- [ ] 5.1 Extend the projector to the `AgentSessionEvent` union. Verify a prompt produces the records the TUI renders, in order
+- [x] 5.1 Extend the projector to the `AgentSessionEvent` union. Verify a prompt produces the records the TUI renders, in order
 - [ ] 5.2 Emit the events durable does not model from their own sources. Verify a thinking-level change emits `thinking_level_changed`
 
 ## 6. Extension rendering (spec: `pi-extension-host`)
