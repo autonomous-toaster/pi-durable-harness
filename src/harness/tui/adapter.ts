@@ -128,7 +128,10 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		let wasRunning = false;
 		stream.start((call) => {
 			if (call.kind !== "value") return;
-			const live = call.value.docs["pi.live"] as { readonly run?: unknown } | undefined;
+			const live = call.value.docs["pi.live"] as
+				| { readonly run?: unknown; readonly tools?: readonly Record<string, unknown>[] }
+				| undefined;
+			for (const slot of live?.tools ?? []) emitTool(call.value, slot);
 			const running = live?.run !== undefined;
 			if (running !== wasRunning) {
 				wasRunning = running;
@@ -166,6 +169,54 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			(options.modelRegistry ?? options.modelRuntime) as never,
 		);
 		return extensionRunner;
+	};
+
+	/** The arguments of a model-issued call, from its assistant entry. */
+	const toolArgs = (callId: string): unknown => {
+		for (const entry of entries) {
+			const message = (entry as { readonly model?: readonly { readonly content?: readonly { readonly type?: string; readonly id?: string; readonly arguments?: unknown }[] }[] }).model?.[0];
+			for (const block of message?.content ?? []) {
+				if (block.type === "toolCall" && block.id === callId) return block.arguments;
+			}
+		}
+		return undefined;
+	};
+
+	/** Announce one tool slot as the start/update/end the TUI draws (task 5.1). */
+	const startedTools = new Set<string>();
+	const emitTool = (view: { readonly entries?: readonly unknown[] }, slot: Record<string, unknown>): void => {
+		const callId = String(slot.callId);
+		const name = String(slot.name ?? "");
+		const status = slot.status;
+		if (status === "pending" || status === "running") {
+			if (!startedTools.has(callId)) {
+				startedTools.add(callId);
+				announce({ type: "tool_execution_start", toolCallId: callId, toolName: name, args: toolArgs(callId) });
+			}
+			if (typeof slot.output === "string" && slot.output.length > 0) {
+				announce({
+					type: "tool_execution_update",
+					toolCallId: callId,
+					toolName: name,
+					partialResult: { content: [{ type: "text", text: slot.output }], details: slot.details ?? {} },
+				});
+			}
+			return;
+		}
+		if (status === "done" && startedTools.delete(callId)) {
+			const result = (view.entries ?? [])
+				.map((entry) => (entry as { readonly id?: unknown; readonly model?: readonly Record<string, unknown>[] }))
+				.find((entry) => String(entry.id) === String(slot.entry))
+				?.model?.[0];
+			announce({
+				type: "tool_execution_end",
+				toolCallId: callId,
+				toolName: name,
+				result,
+				isError: result?.isError === true,
+				durationMs: result?.durationMs,
+			});
+		}
 	};
 
 	/** Announce a control entry as the event pi's TUI renders it (task 5.2). */
