@@ -32,7 +32,7 @@ import { HarnessSession } from "./rpc/session.js";
 import { loadMcpTools } from "./tools/mcp.js";
 import type { RegisteredMcpServer } from "./tools/exposure.js";
 
-const USAGE = "durable-rpc — pi-RPC-compatible harness backed by Pi Durable\n";
+const USAGE = "pi-durable-harness — pi-RPC-compatible harness backed by Pi Durable\n";
 
 /** Read all of piped stdin (task 1.2); the caller only does this for a non-terminal stdin. */
 async function readStdin(): Promise<string> {
@@ -61,7 +61,7 @@ async function reloadResources(
 
 export async function main(argv: readonly string[]): Promise<void> {
 	const config = resolveConfig(argv, process.env);
-	for (const warning of config.warnings) process.stderr.write(`durable-rpc: ${warning}\n`);
+	for (const warning of config.warnings) process.stderr.write(`pi-durable-harness: ${warning}\n`);
 	if (config.help) {
 		process.stdout.write(USAGE);
 		return;
@@ -69,7 +69,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// A malformed session id cannot be opened, and rewriting it would silently
 	// continue the wrong session (task 1.3).
 	if (config.sessionError !== undefined) {
-		process.stderr.write(`durable-rpc: ${config.sessionError}\n`);
+		process.stderr.write(`pi-durable-harness: ${config.sessionError}\n`);
 		process.exitCode = 1;
 		return;
 	}
@@ -79,7 +79,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 	// Resolve the session before storage opens: explicit id, newest for `-c`, or new.
 	const resolved = await resolveSession(config);
-	if (resolved.warning !== undefined) process.stderr.write(`durable-rpc: ${resolved.warning}\n`);
+	if (resolved.warning !== undefined) process.stderr.write(`pi-durable-harness: ${resolved.warning}\n`);
 	const key = resolved.id;
 	const modelRuntime = await ModelRuntime.create();
 	const settingsManager = SettingsManager.create(config.cwd);
@@ -93,7 +93,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 	// pi extensions: translate what the loader recorded, report the rest (tasks 3.1-3.11).
 	const loaded = loader.getExtensions();
-	for (const failure of loaded.errors) process.stderr.write(`durable-rpc: extension ${failure.path} failed: ${failure.error}\n`);
+	for (const failure of loaded.errors) process.stderr.write(`pi-durable-harness: extension ${failure.path} failed: ${failure.error}\n`);
 	// The session view exists only once the engine and its snapshot do, so the
 	// provider is assigned below and the tool call reads it at call time (task 5.1).
 	let sessionView: (() => Promise<Record<string, unknown>>) | undefined;
@@ -192,7 +192,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 		extensionContext(),
 		(result) =>
 			process.stderr.write(
-				`durable-rpc: extension ${result.extension} returned ${result.field} on ${result.event}; an RPC host does not apply it\n`,
+				`pi-durable-harness: extension ${result.extension} returned ${result.field} on ${result.event}; an RPC host does not apply it\n`,
 			),
 		() => refreshSnapshot(engine, snapshot),
 	);

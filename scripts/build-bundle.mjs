@@ -1,17 +1,25 @@
 #!/usr/bin/env node
 // Release build (task 1.5).
 //
-// `--bundle` produces a single JavaScript file at dist/bundle/cli.js from the
-// ESM entry. Node built-ins stay external (platform: node).
+// `--bundle` produces one self-contained JavaScript file at dist/bundle/cli.js
+// from the ESM entry: Node built-ins stay external (platform: node), every
+// package is inlined, and the file runs with no `node_modules` beside it.
 //
-// A true single-executable (Node SEA) additionally requires embedding assets
-// (the QuickJS wasm the codemode worker loads) and injecting the blob into the
-// node binary with `postject`, which this project does not depend on. So the
-// supported release artifact is the ESM package (`npm run build`); the bundle
-// is provided for constrained images that already run Node, and the fallback is
-// documented here rather than silently shipping a broken executable.
+// A Node SEA binary is a separate, unshipped step. SEA is native to Node
+// (`--build-sea`), and pi-codemode takes an injected `wasm` module and `worker`
+// entry for compiled executables; what is missing is a SEA-enabled Node build
+// to package with and the wiring of `sea.getRawAsset` into those two options.
+// The bundle below is the artifact to feed it once that exists.
 import { build } from "esbuild";
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+// pi's exports map hides the codemode description composer, so the source names
+// it and the bundler resolves it here. Without this the deep import stays
+// external and the bundle only runs inside the repository (see pi-internals.ts).
+const codemodeTool = fileURLToPath(
+	new URL("../node_modules/@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js", import.meta.url),
+);
 
 await build({
 	entryPoints: ["src/cli.ts"],
@@ -20,6 +28,10 @@ await build({
 	format: "esm",
 	target: "node22",
 	outfile: "dist/bundle/cli.js",
+	alias: { "@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js": codemodeTool },
+	// The codemode sandbox needs the QuickJS wasm; inline it so the single file
+	// carries it, rather than resolving `quickjs-wasi` from a missing node_modules.
+	loader: { ".wasm": "binary" },
 	logLevel: "info",
 });
 // esbuild's banner is not reliably the first line in ESM output, so prepend the

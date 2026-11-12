@@ -1,6 +1,6 @@
 {
-	"name": "pi-durable-rpc-harness",
-	"version": "0.0.0",
+	"name": "pi-durable-harness",
+	"version": "1.5.2",
 	"private": true,
 	"description": "pi-RPC-compatible harness backed by Pi Durable and PostgreSQL",
 	"type": "module",
@@ -8,7 +8,7 @@
 		"node": ">=22.19.0"
 	},
 	"bin": {
-		"durable-rpc": "./dist/cli.js"
+		"pi-durable-harness": "./dist/cli.js"
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -42,6 +42,11 @@
 	"devDependencies": {
 		"@types/node": "22.8.7",
 		"@types/pg": "8.15.5",
+		"esbuild": "0.28.2",
 		"typescript": "5.8.3"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/autonomous-toaster/pi-durable-harness.git"
 	}
 }

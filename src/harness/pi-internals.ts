@@ -1,11 +1,17 @@
 /**
  * Access to pi's internal codemode description composer (part of task 5.6).
- * The package `exports` map hides `extensions/codemode/tool.ts`, so it is
- * imported by file URL relative to this module. Reusing pi's own composer is
- * what makes the `codemode` description match exactly.
+ * Reusing pi's own composer is what makes the `codemode` description match
+ * exactly. Two ways in, because the package `exports` map hides the path:
+ *
+ *  - by specifier, which the bundler resolves and inlines, so the bundle is one
+ *    file with no `node_modules` beside it;
+ *  - by file URL, for the plain `dist/` build that Node runs directly, where the
+ *    specifier is refused by the exports map.
  */
-const codemodeToolModule = await import(
-	new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js", import.meta.url).href
+// @ts-expect-error -- pi's exports map hides this path; the bundler resolves it, so
+// the type checker cannot, and `dist` falls back to the URL import below.
+const codemodeToolModule: unknown = await import("@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js").catch(() =>
+	import(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js", import.meta.url).href),
 );
 
 export interface PiCodemodeTool {

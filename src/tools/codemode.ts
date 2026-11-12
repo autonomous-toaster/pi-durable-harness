@@ -5,7 +5,13 @@
  * model are still callable from a script. The declaration text is rendered with
  * pi-codemode's helpers, grouped by server namespace and kept within a budget.
  */
-import { CodemodeSandbox, type CodemodeResult } from "@earendil-works/pi-codemode";
+import {
+	CodemodeSandbox,
+	InlineCodemodeSandbox,
+	loadQuickJSWasm,
+	type CodemodeResult,
+	type CodemodeSandboxBase,
+} from "@earendil-works/pi-codemode";
 import { defineTool, type ToolExecutionApi, type ToolRegistration, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { callable, mcpEntries } from "./state.js";
 import {
@@ -67,12 +73,47 @@ export function renderCodemodeDescription(tools: readonly ToolRegistration[]): s
 	});
 }
 
+/**
+ * The QuickJS wasm, inlined by the bundler when the file is packed (esbuild maps
+ * `.wasm` to a byte array). The plain `dist/` build cannot import a `.wasm`
+ * specifier, so it falls back to pi-codemode's own file lookup.
+ */
+async function bundledWasm(): Promise<unknown> {
+	try {
+		// @ts-expect-error -- only the bundler resolves a `.wasm` specifier.
+		const module = await import("quickjs-wasi/quickjs.wasm");
+		const bytes: unknown = module.default ?? module;
+		// The Node type definitions do not declare the WebAssembly globals.
+		const wasm = (globalThis as unknown as { WebAssembly: { compile(b: ArrayBuffer): Promise<unknown> } }).WebAssembly;
+		return await wasm.compile(bytes as ArrayBuffer);
+	} catch {
+		return loadQuickJSWasm();
+	}
+}
+
+/**
+ * A sandbox for this build (tasks: bundle parity). The worker keeps the VM off
+ * the event loop, which is what lets Stop and progress work while a script runs;
+ * it needs a worker file, so a single-file bundle falls back to the inline
+ * sandbox with the wasm compiled from the bundle itself. That fallback trades
+ * the deadline timer for an interrupt budget, which pi-codemode documents.
+ */
+export async function createSandbox(): Promise<CodemodeSandboxBase> {
+	try {
+		// `import.meta.resolve` follows the package's `import` condition, which is
+		// the only one it exports (`require` cannot see `./worker`).
+		return new CodemodeSandbox({ workerUrl: new URL(import.meta.resolve("@earendil-works/pi-codemode/worker")) });
+	} catch {
+		return new InlineCodemodeSandbox({ wasm: (await bundledWasm()) as never });
+	}
+}
+
 export const codemodeTool = defineTool({
 	name: "codemode",
 	description: CODEMODE_DESCRIPTION,
 	parameters: CODEMODE_PARAMETERS as never,
 	execute: async (args, api: ToolExecutionApi, context) => {
-		const sandbox = new CodemodeSandbox();
+		const sandbox = await createSandbox();
 		try {
 			for (const { tool } of api.registry.tools() as readonly { tool: ToolRegistration }[]) {
 				if (tool.name === "codemode" || !callable(tool.name)) continue;

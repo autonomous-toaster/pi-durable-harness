@@ -129,7 +129,7 @@ export class ExtensionEventBus {
 				this.#checkResult(extension, event, result);
 			} catch (error) {
 				process.stderr.write(
-					`durable-rpc: extension ${extension} failed on ${event}: ${error instanceof Error ? error.message : String(error)}\n`,
+					`pi-durable-harness: extension ${extension} failed on ${event}: ${error instanceof Error ? error.message : String(error)}\n`,
 				);
 			}
 		}

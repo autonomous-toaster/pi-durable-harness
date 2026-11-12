@@ -202,7 +202,7 @@ export class HarnessEngine {
 				options.mcp?.settings.autoEnableCodemode ?? true,
 				defaultTools,
 			);
-			for (const warning of activation.warnings) process.stderr.write(`durable-rpc: ${warning}\n`);
+			for (const warning of activation.warnings) process.stderr.write(`pi-durable-harness: ${warning}\n`);
 			const declared = computeDeclaredTools(
 				(
 					registry.snapshot().tools() as readonly { readonly tool: import("@earendil-works/pi-durable").ToolRegistration }[]
