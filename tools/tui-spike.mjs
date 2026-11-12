@@ -3,7 +3,7 @@
 // durable engine, through the TUI adapter, and report what it asks for and how
 // far it gets. A headless terminal means the render is a buffer, not a screen.
 import { InteractiveMode } from "@earendil-works/pi-coding-agent";
-import { DefaultResourceLoader, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, ModelRegistry, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { HarnessEngine } from "../dist/harness/engine.js";
 import { createTuiRuntime } from "../dist/harness/tui/adapter.js";
 import { resolveConfig } from "../dist/harness/config.js";
@@ -49,7 +49,9 @@ class HeadlessTerminal {
 }
 
 const config = resolveConfig(
-	["--mode", "rpc", "--no-session", "--provider", "ollama-cloud", "--model", "deepseek-v4.1-flash:cloud"],
+	["--mode", "rpc", "--no-session",
+	 "--provider", process.env.TEST_LIVE_PROVIDER ?? "ollama-cloud",
+	 "--model", process.env.TEST_LIVE_MODEL_ID ?? "deepseek-v4.1-flash:cloud"],
 	process.env,
 	process.cwd(),
 );
@@ -72,7 +74,10 @@ const runtime = createTuiRuntime(engine, {
 	settingsManager,
 	resourceLoader: loader,
 	modelRuntime,
+	modelRegistry: new ModelRegistry(modelRuntime),
 	thinkingLevel: "off",
+	extensions: loader.getExtensions().extensions,
+	terminal: undefined,
 });
 await runtime.refresh();
 await runtime.startWatching();

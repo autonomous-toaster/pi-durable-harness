@@ -264,6 +264,23 @@ Storage is selected by configuration and is invisible to the client.
 
 PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. Durable's own migrations run through the facade. It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.
 
+## The TUI
+
+Run it with no mode and no prompt on a terminal:
+
+```bash
+npm run build:tui        # dist/ plus the pi-tui native helper for this platform
+node dist/cli.js         # pi's own InteractiveMode, over durable state
+```
+
+The TUI is **pi's own interface code**, not a reimplementation: `dist/cli.js` hands pi's `InteractiveMode` a runtime served by the durable engine, so every row, selector, keybinding, and slash command is pi's. `--mode rpc` and a piped stdin keep the headless behaviour, and `--mode tui` forces the TUI on a non-terminal.
+
+What is durable: the transcript, the session identity, the agent's model and thinking level, the active tool set, labels and custom entries, and the event stream the TUI renders. What is pi's: the layout, the editor, the selectors, the extension renderers, and the commands.
+
+- The TUI is **not a single-file artifact**: `pi-tui` loads a native module from its own package, so the build needs the installed package tree. `npm run build:tui` proves the helper resolves.
+- Extensions render through **pi's runner** — bound beside the durable host with the TUI's UI context — while execution stays on the durable host, so a hook runs once.
+- Node flags go through the environment, as for the SEA binary: `NODE_OPTIONS=--trace-warnings node dist/cli.js`.
+
 ## Running under Open Terminal
 
 Open Terminal starts the agent with `--mode rpc --session-id <id> --append-system-prompt <text|path>` and passes its configured command straight to `create_subprocess_exec`, so `OPEN_TERMINAL_PI_COMMAND` must be a **path to an executable file**, not a command line:

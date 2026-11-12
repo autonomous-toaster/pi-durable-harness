@@ -28,7 +28,8 @@
 		"test": "node --test",
 		"differential": "node tools/differential-mcp.mjs",
 		"check": "node scripts/check.mjs",
-		"build:sea": "node scripts/build-sea.mjs"
+		"build:sea": "node scripts/build-sea.mjs",
+		"build:tui": "node scripts/build-tui.mjs"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.5.2",

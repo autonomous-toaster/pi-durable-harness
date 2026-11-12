@@ -12,6 +12,7 @@
  * refreshes it as commits land and forwards `entry_appended` to the TUI.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createExtensionRuntime, ExtensionRunner, type Extension } from "@earendil-works/pi-coding-agent";
 import type { HarnessEngine } from "../engine.js";
 import { projectEntry } from "../projection.js";
 
@@ -25,7 +26,12 @@ export interface TuiAdapterOptions {
 	readonly settingsManager: unknown;
 	readonly resourceLoader: unknown;
 	readonly modelRuntime: unknown;
+	readonly modelRegistry?: unknown;
 	readonly thinkingLevel: string;
+	/** pi's loaded extensions: their renderers and commands are what the TUI draws. */
+	readonly extensions?: readonly Extension[];
+	/** A terminal implementation; the process terminal when absent. */
+	readonly terminal?: unknown;
 }
 
 export interface TuiRuntime {
@@ -55,7 +61,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	let messages: readonly unknown[] = [];
 	let idle = true;
 	let model: { provider: string; id: string; name?: string } | undefined;
-	let extensionRunner: unknown = createRenderingRunner();
+	let extensionRunner: unknown;
 	let extensionBindings: unknown;
 
 	/** The runner the TUI reads for commands, renderers, and overlays. */
@@ -80,6 +86,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			getModelRegistry: none,
 			getWidgets: empty,
 			getKeybindings: empty,
+			setUIContext: none,
 			emitUserBash: none,
 			emit: none,
 			on: () => () => {},
@@ -115,9 +122,43 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			for (const entry of fresh) {
 				seen.add(String(entry.id));
 				announce({ type: "entry_appended", entry: projectEntry(entry, null) });
+				emitControl(entry);
 			}
 			void refresh();
 		});
+	};
+
+	/** pi's own runner, so extension rows, commands, and shortcuts are real (task 6.1). */
+	const runner = (): unknown => {
+		if (extensionRunner !== undefined) return extensionRunner;
+		if (options.extensions === undefined || options.extensions.length === 0) {
+			extensionRunner = createRenderingRunner();
+			return extensionRunner;
+		}
+		extensionRunner = new ExtensionRunner(
+			[...options.extensions],
+			createExtensionRuntime(),
+			options.cwd,
+			sessionManager as never,
+			(options.modelRegistry ?? options.modelRuntime) as never,
+		);
+		return extensionRunner;
+	};
+
+	/** Announce a control entry as the event pi's TUI renders it (task 5.2). */
+	const emitControl = (entry: unknown): void => {
+		const control = entry as { readonly kind?: string; readonly data?: { readonly type?: string; readonly level?: string; readonly name?: string; readonly provider?: string; readonly modelId?: string } };
+		if (control.kind !== "harness.control") return;
+		switch (control.data?.type) {
+			case "thinking_level_change":
+				if (control.data.level !== undefined) announce({ type: "thinking_level_changed", level: control.data.level });
+				return;
+			case "session_info":
+				announce({ type: "session_info_changed", name: control.data.name });
+				return;
+			default:
+				return;
+		}
 	};
 
 	const sessionState = (): Record<string, unknown> => ({
@@ -144,8 +185,10 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		getCwd: () => options.cwd,
 		isPersisted: true,
 		usesDefaultSessionDir: false,
-		appendCustomEntry: () => undefined,
-		appendLabelChange: () => undefined,
+		// A custom entry and a label are durable control entries (task 3.3).
+		appendCustomEntry: (customType: string, data: unknown) =>
+			engine.appendControl({ type: "custom", customType, data } as never),
+		appendLabelChange: (_entryId: string, label: string) => engine.appendControl({ type: "label", label }),
 	};
 
 	const session: Record<string, unknown> = {
@@ -158,7 +201,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		resourceLoader: options.resourceLoader,
 		settingsManager: options.settingsManager,
 		get extensionRunner() {
-			return extensionRunner;
+			return runner();
 		},
 		get state() {
 			return sessionState();
@@ -232,6 +275,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		// runner it later reads is ours, because the harness owns extension loading.
 		bindExtensions: async (bindings: unknown) => {
 			extensionBindings = bindings;
+			const context = (bindings as { uiContext?: unknown; mode?: string } | undefined)?.uiContext;
+			const target = runner() as { setUIContext?: (ui: unknown, mode?: string) => void };
+			if (target.setUIContext !== undefined) target.setUIContext(context, "tui");
 		},
 		subscribe: (listener: SessionEventListener) => {
 			listeners.add(listener);
@@ -245,7 +291,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		resourceLoader: options.resourceLoader,
 		modelRuntime: options.modelRuntime,
 		get extensionRunner() {
-			return extensionRunner;
+			return runner();
 		},
 	};
 

@@ -16,7 +16,7 @@ function expandTilde(path: string): string {
 
 export interface HarnessConfig {
 	readonly mode: string | undefined;
-	readonly interfaceName: "rpc" | "print" | "json";
+	readonly interfaceName: "rpc" | "print" | "json" | "tui";
 	readonly prompts: readonly string[];
 	readonly print: boolean;
 	readonly cwd: string;
@@ -135,6 +135,8 @@ export function resolveConfig(
 	argv: readonly string[],
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string = process.cwd(),
+	/** Whether stdout is a terminal; the TUI is selected only when it is. */
+	tty: boolean = process.stdout.isTTY === true,
 ): HarnessConfig {
 	const agentDir = expandTilde(env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
 	const warnings: string[] = [];
@@ -189,16 +191,22 @@ export function resolveConfig(
 	// is a warning, not a mode switch. This keeps an unknown value-taking flag
 	// from silently turning the server into a one-shot print.
 	const printMode = flag("print");
+	// A terminal with nothing to run interactively is the TUI; anything piped or
+	// named stays a script mode, so an RPC client never gets a renderer.
 	const interfaceName: HarnessConfig["interfaceName"] =
 		mode === "rpc"
 			? "rpc"
-			: printMode
-				? "print"
-				: prompts.length === 0
-					? "rpc"
-					: mode === "json"
-						? "json"
-						: "print";
+			: mode === "tui"
+				? "tui"
+				: printMode
+					? "print"
+					: prompts.length === 0
+						? tty
+							? "tui"
+							: "rpc"
+						: mode === "json"
+							? "json"
+							: "print";
 
 	return {
 		mode,

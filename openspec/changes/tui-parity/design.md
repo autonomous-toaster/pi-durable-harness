@@ -45,7 +45,7 @@ Two facts close the shortcuts. `createAgentSession(options)` takes no `sessionMa
 
 **6. pi's extension runner renders, the durable host executes.** The TUI reads `session.extensionRunner` for tool rows, message renderers, overlays, and widgets. Running pi's runner beside our translator gives the TUI its components. The rule is one-directional: the runner renders and never executes, because a hook that ran twice would double-block or double-commit.
 
-**7. The TUI is a fourth artifact.** `pi-tui` loads `native/<platform>/prebuilds/…-platform.node`. `scripts/build-tui.mjs` therefore emits `dist/tui/` with the entry and the native module beside it, and the ESM package, single-file bundle, and SEA binary stay unchanged.
+**7. The TUI is a fourth artifact, and it is not single-file.** `pi-tui` resolves `native/<platform>/prebuilds/…-platform.node` from its own package path, its `dist`, or beside the executing binary — never from our entry. So a TUI build requires the installed package tree; `scripts/build-tui.mjs` builds `dist/` and loads the platform helper to prove it resolves, and the ESM package, single-file bundle, and SEA binary stay TUI-free.
 
 **8. A terminal selects the TUI.** `stdout.isTTY` and no `--mode` and no prompt selects it; `--mode rpc` always wins, so a client that pipes stdio never gets a renderer.
 

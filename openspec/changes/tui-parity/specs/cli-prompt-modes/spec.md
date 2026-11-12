@@ -9,14 +9,14 @@
 
 ## ADDED Requirements
 
-### Requirement: The TUI artifact carries the native module
+### Requirement: The TUI build resolves the native module
 
-T2.1 SHALL ALWAYS ship the `pi-tui` native module beside the TUI entry.
+T2.1 SHALL ALWAYS load the `pi-tui` native module for the host platform before it reports a TUI build.
 
-#### Scenario: The TUI entry finds its module
+#### Scenario: The TUI build finds its module
 
-- **WHEN** T2.1 builds the TUI artifact
-- **THEN** T2.1 SHALL place the native module beside the entry
+- **WHEN** T2.1 runs on a supported platform
+- **THEN** T2.1 SHALL load the native module the installed package ships
 
 ### Requirement: A terminal selects the TUI
 

@@ -4,6 +4,7 @@
  */
 import {
 	DefaultResourceLoader,
+	ModelRegistry,
 	ModelRuntime,
 	resolveCliModel,
 	resolveModelScopeWithDiagnostics,
@@ -314,7 +315,21 @@ export async function main(argv: readonly string[]): Promise<void> {
 	);
 	const session = new HarnessSession(engine, key, bus);
 	try {
-		if (config.interfaceName !== "rpc") {
+		if (config.interfaceName === "tui") {
+			// Loaded here, so pi-tui and its native module never reach the other modes.
+			const { runTui } = await import("./harness/tui/run.js");
+			await runTui(engine, {
+				cwd: config.cwd,
+				sessionId: key,
+				settingsManager,
+				resourceLoader,
+				modelRuntime,
+				modelRegistry: new ModelRegistry(modelRuntime),
+				thinkingLevel: config.thinking ?? "off",
+				extensions: loaded.extensions,
+				verbose: config.mode === "tui" ? true : false,
+			});
+		} else if (config.interfaceName !== "rpc") {
 			const stdinText = process.stdin.isTTY === true ? undefined : await readStdin();
 			process.exitCode = await runOneShot(
 				config.interfaceName,
