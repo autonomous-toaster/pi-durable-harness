@@ -326,6 +326,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 				modelRuntime,
 				modelRegistry: new ModelRegistry(modelRuntime),
 				thinkingLevel: config.thinking ?? "off",
+				persisted: !config.ephemeral,
+				defaultSessionDir: config.defaultSessionDir,
 				extensions: loaded.extensions,
 				verbose: config.mode === "tui" ? true : false,
 			});

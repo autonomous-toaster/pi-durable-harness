@@ -15,6 +15,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExtensionRuntime, ExtensionRunner, type Extension } from "@earendil-works/pi-coding-agent";
 import type { HarnessEngine } from "../engine.js";
 import { projectEntry } from "../projection.js";
+import { readFileSync } from "node:fs";
+import { type SkillLike, type TemplateLike, expandPromptTemplate, expandSkillCommand } from "./slash.js";
 
 const CONTEXT = BACKGROUND_CONTEXT;
 
@@ -30,6 +32,10 @@ export interface TuiAdapterOptions {
 	readonly thinkingLevel: string;
 	/** pi's loaded extensions: their renderers and commands are what the TUI draws. */
 	readonly extensions?: readonly Extension[];
+	/** Whether the session is written to storage; pi asks this to print a resume hint. */
+	readonly persisted?: boolean;
+	/** Whether the session dir is the default one; pi asks this to shorten that hint. */
+	readonly defaultSessionDir?: boolean;
 	/** A terminal implementation; the process terminal when absent. */
 	readonly terminal?: unknown;
 }
@@ -96,6 +102,19 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		};
 	}
 
+	/** pi expands `/skill:` and `/<template>` in its session; the host does it here. */
+	const expand = (text: string): string => {
+		if (!text.startsWith("/")) return text;
+		const loader = options.resourceLoader as {
+			getSkills?: () => { skills?: readonly SkillLike[] };
+			getPrompts?: () => { prompts?: readonly TemplateLike[] };
+		};
+		return expandPromptTemplate(
+			expandSkillCommand(text, loader.getSkills?.().skills ?? [], (path) => readFileSync(path, "utf8")),
+			loader.getPrompts?.().prompts ?? [],
+		);
+	};
+
 	const piEntries = (): unknown[] => entries.map((entry) => projectEntry(entry as never, null));
 	const announce = (event: unknown): void => {
 		for (const listener of listeners) listener(event);
@@ -129,8 +148,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		stream.start((call) => {
 			if (call.kind !== "value") return;
 			const live = call.value.docs["pi.live"] as
-				| { readonly run?: unknown; readonly tools?: readonly Record<string, unknown>[] }
+				| { readonly run?: unknown; readonly generation?: unknown; readonly tools?: readonly Record<string, unknown>[] }
 				| undefined;
+			emitGeneration(live);
 			for (const slot of live?.tools ?? []) emitTool(call.value, slot);
 			const running = live?.run !== undefined;
 			if (running !== wasRunning) {
@@ -143,10 +163,17 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				announce({ type: "entry_appended", entry: projectEntry(entry, null) });
 				// A message entry is announced as the message pair the TUI draws
 				// (pi's AgentSessionEvent carries the message, not the entry).
-				const message = (entry as { readonly model?: readonly unknown[] }).model?.[0];
+				const message = (entry as { readonly model?: readonly { readonly role?: string }[] }).model?.[0];
 				if (message !== undefined) {
-					announce({ type: "message_start", message });
-					announce({ type: "message_end", message });
+					if (streaming !== undefined && message.role === "assistant") {
+						// The streamed message landed: finalize it, do not draw it twice.
+						streaming = undefined;
+						streamingJson = "";
+						announce({ type: "message_end", message });
+					} else {
+						announce({ type: "message_start", message });
+						announce({ type: "message_end", message });
+					}
 				}
 				emitControl(entry);
 			}
@@ -184,11 +211,38 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 
 	/** Announce one tool slot as the start/update/end the TUI draws (task 5.1). */
 	const startedTools = new Set<string>();
+	// The generation's committed partial, and the calls its message already shows.
+	let streaming: Record<string, unknown> | undefined;
+	let streamingJson = "";
+	const callsInGeneration = new Set<string>();
+
+	/** Announce the in-flight assistant message as the pair the TUI streams (task 5.3). */
+	const emitGeneration = (live: { readonly generation?: unknown } | undefined): void => {
+		const message = (live?.generation as { readonly message?: Record<string, unknown> } | undefined)?.message;
+		if (message === undefined) return;
+		for (const block of (message.content as readonly { readonly type?: string; readonly id?: string }[] | undefined) ?? []) {
+			if (block.type === "toolCall" && block.id !== undefined) callsInGeneration.add(block.id);
+		}
+		const json = JSON.stringify(message);
+		if (streaming === undefined) {
+			streaming = message;
+			streamingJson = json;
+			announce({ type: "message_start", message });
+			return;
+		}
+		if (json !== streamingJson) {
+			streamingJson = json;
+			announce({ type: "message_update", message });
+		}
+	};
 	const emitTool = (view: { readonly entries?: readonly unknown[] }, slot: Record<string, unknown>): void => {
 		const callId = String(slot.callId);
 		const name = String(slot.name ?? "");
 		const status = slot.status;
 		if (status === "pending" || status === "running") {
+			// The TUI builds the row from the assistant's toolCall block, so wait for it
+			// rather than draw a row with no arguments.
+			if (!startedTools.has(callId) && !callsInGeneration.has(callId) && toolArgs(callId) === undefined) return;
 			if (!startedTools.has(callId)) {
 				startedTools.add(callId);
 				announce({ type: "tool_execution_start", toolCallId: callId, toolName: name, args: toolArgs(callId) });
@@ -259,8 +313,8 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		getSessionFile: () => undefined,
 		getSessionDir: () => "",
 		getCwd: () => options.cwd,
-		isPersisted: true,
-		usesDefaultSessionDir: false,
+		isPersisted: () => options.persisted ?? true,
+		usesDefaultSessionDir: () => options.defaultSessionDir ?? true,
 		// A custom entry and a label are durable control entries (task 3.3).
 		appendCustomEntry: (customType: string, data: unknown) =>
 			engine.appendControl({ type: "custom", customType, data } as never),
@@ -291,8 +345,11 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		get scopedModels() {
 			return [];
 		},
+		// pi's loader owns the prompt templates; the TUI turns each into a `/name`
+		// command and expands it, so an empty list makes every `/name` a raw prompt.
 		get promptTemplates() {
-			return [];
+			const loader = options.resourceLoader as { getPrompts?: () => { prompts?: readonly unknown[] } };
+			return loader.getPrompts?.().prompts ?? [];
 		},
 		get isStreaming() {
 			return !idle;
@@ -337,9 +394,10 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			engine.configure({ model: { provider: model.provider, modelId: model.id } } as never),
 		setThinkingLevel: (level: string) => engine.configure({ thinkingLevel: level } as never),
 		setScopedModels: () => undefined,
-		prompt: (text: string) => engine.submit(text),
-		steer: (text: string) => engine.submit(text, "steer"),
-		followUp: (text: string) => engine.submit(text, "followUp"),
+		prompt: (text: string, submitOptions?: { readonly expandPromptTemplates?: boolean }) =>
+			engine.submit(submitOptions?.expandPromptTemplates === false ? text : expand(text)),
+		steer: (text: string) => engine.submit(expand(text), "steer"),
+		followUp: (text: string) => engine.submit(expand(text), "followUp"),
 		sendUserMessage: (content: string) => engine.submit(content),
 		sendCustomMessage: () => undefined,
 		abort: () => engine.abort(),

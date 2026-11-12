@@ -22,6 +22,8 @@ export interface HarnessConfig {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly sessionDir: string;
+	/** True when no flag or variable moved the session dir, so pi can shorten its resume hint. */
+	readonly defaultSessionDir: boolean;
 	readonly sessionKey: string | undefined;
 	readonly continueSession: boolean;
 	/** `--tenant`: labels the session; the tenant is data, not a namespace. */
@@ -216,6 +218,7 @@ export function resolveConfig(
 		cwd,
 		agentDir,
 		sessionDir: expandTilde(text("session-dir") ?? env.PI_CODING_AGENT_SESSION_DIR ?? join(agentDir, "sessions")),
+		defaultSessionDir: text("session-dir") === undefined && env.PI_CODING_AGENT_SESSION_DIR === undefined,
 		sessionKey,
 		continueSession: flag("continue"),
 		tenant,
