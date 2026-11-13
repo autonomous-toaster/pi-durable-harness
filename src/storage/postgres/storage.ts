@@ -10,9 +10,17 @@ import type { Pool } from "pg";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { PostgresDatabase } from "./database.js";
 
+/**
+ * Another process writes this session. The message names the session, which is what
+ * a user passed to `--session-id` and what `/session` shows; the table prefix the
+ * backend derives from it is an implementation detail and is kept out.
+ */
 export class SessionLockedError extends Error {
-	constructor(schema: string) {
-		super(`Session is already open in another process: ${schema}`);
+	constructor(
+		readonly session: string,
+		readonly schema: string,
+	) {
+		super(`session ${session} is open in another process (schema ${schema})`);
 		this.name = "SessionLockedError";
 	}
 }
@@ -23,6 +31,8 @@ export interface PostgresStorageOptions {
 	readonly schema: string;
 	/** Table prefix of one session inside that schema. */
 	readonly prefix: string;
+	/** The session as the user names it, for messages. */
+	readonly session?: string;
 }
 
 /** Signed 64-bit advisory-lock key for a schema and session prefix (FNV-1a). */
@@ -40,7 +50,7 @@ export async function openPostgresStorage(options: PostgresStorageOptions): Prom
 	const database = await PostgresDatabase.open(options.pool, options.schema, { prefix: options.prefix });
 	try {
 		if (!(await database.tryAdvisoryLock(advisoryKey(`${options.schema}\u0000${options.prefix}`)))) {
-			throw new SessionLockedError(`${options.schema}/${options.prefix}`);
+			throw new SessionLockedError(options.session ?? options.prefix, options.schema);
 		}
 		// The prefix keeps each session's table set apart inside the shared schema.
 		return await SqliteStorage.open(database, { prefix: options.prefix });

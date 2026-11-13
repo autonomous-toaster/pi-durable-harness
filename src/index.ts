@@ -14,7 +14,7 @@ import {
 import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
 import { copySession } from "./harness/fork.js";
-import { newSessionId, resolveSession } from "./harness/session.js";
+import { newSessionId, resolveSession, sessionFile } from "./harness/session.js";
 import { runOneShot } from "./harness/oneshot.js";
 import type { PromptResources } from "./harness/prompt.js";
 import {
@@ -320,10 +320,10 @@ export async function main(argv: readonly string[]): Promise<void> {
 		});
 	} catch (error) {
 		if ((error as { name?: string } | undefined)?.name === "SessionLockedError") {
-			const held = error instanceof Error ? error.message.replace(/^Session is already open in another process: /, "") : "this session";
+			const held = error instanceof Error ? error.message : "this session";
 			process.stderr.write(
 				[
-					`pi-durable-harness: ${held} is open in another process, so this one cannot write to it.`,
+					`pi-durable-harness: ${held}; this process cannot write to it.`,
 					"  Continue in a new session:      node dist/cli.js",
 					"  Continue in a fork of it:       node dist/cli.js --fork <session-id>",
 					"  Or name another session:        node dist/cli.js --session-id <id>",
@@ -390,6 +390,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 				cwd: config.cwd,
 				agentDir: config.agentDir,
 				sessionId: key,
+				...(config.databaseUrl === undefined
+					? { sessionFile: sessionFile(config, key) }
+					: { sessionFile: `postgres:${config.schema}/${config.tenant}__${key}` }),
 				settingsManager,
 				resourceLoader: tuiResourceLoader,
 				modelRuntime,

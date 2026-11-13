@@ -135,6 +135,7 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			pool,
 			schema: config.schema,
 			prefix: sessionPrefix(config.tenant, key),
+			session: key,
 		}).catch(async (error: unknown) => {
 			// The pool would keep the process alive after the failure is reported.
 			await pool.end().catch(() => {});

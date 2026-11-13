@@ -41,6 +41,8 @@ export interface TuiAdapterOptions {
 	readonly persisted?: boolean;
 	/** Whether the session dir is the default one; pi asks this to shorten that hint. */
 	readonly defaultSessionDir?: boolean;
+	/** Where this session lives, as `/session` shows it (a path, or the database). */
+	readonly sessionFile?: string;
 	/** A terminal implementation; the process terminal when absent. */
 	readonly terminal?: unknown;
 }
@@ -88,8 +90,8 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	/** The models startup lists as "Model scope" and Ctrl+P cycles. */
 	let scoped: { model: Record<string, unknown>; thinkingLevel?: string }[] = [];
 	let bashProcess: ReturnType<typeof spawn> | undefined;
-	/** The session file pi prints and /session shows; the host names it by rule. */
-	const sessionFileOf = (): string | undefined => undefined;
+	/** The session file pi prints and /session shows. */
+	const sessionFileOf = (): string | undefined => options.sessionFile;
 	let extensionRunner: unknown;
 	let extensionBindings: unknown;
 
@@ -588,7 +590,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		getSessionId: () => options.sessionId,
 		getSessionName: () => undefined,
 		// Durable keeps no session file: panels show identity, not a path.
-		getSessionFile: () => undefined,
+		getSessionFile: () => sessionFileOf(),
 		getSessionDir: () => "",
 		getCwd: () => options.cwd,
 		isPersisted: () => options.persisted ?? true,
@@ -657,7 +659,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				}
 			}
 			return {
-				sessionFile: options.persisted === false ? undefined : sessionFileOf(),
+				sessionFile: sessionFileOf(),
 				sessionId: options.sessionId,
 				userMessages,
 				assistantMessages,
