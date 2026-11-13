@@ -49,9 +49,9 @@ function consumedMembers() {
 const engine = new Proxy(
 	{
 		entries: async () => [],
-		messages: async () => [],
+		messages: async () => [{ role: "assistant", usage: { input: 900, output: 100, cacheRead: 0, cacheWrite: 0 } }],
 		isQuiescent: async () => true,
-		resolvedAgent: async () => ({ cwd: process.cwd() }),
+		resolvedAgent: async () => ({ cwd: process.cwd(), model: { provider: "p", modelId: "m" } }),
 		currentThinkingLevel: () => "off",
 		// A stub that answers a plausible value, so a check sees the adapter's shape
 		// rather than the stub's emptiness.
@@ -79,7 +79,7 @@ const buildRuntime = async () =>
 		sessionId: "returns",
 		settingsManager: { get: () => undefined },
 		resourceLoader: { getSkills: () => ({ skills: [] }), getPrompts: () => ({ prompts: [] }) },
-		modelRuntime: {},
+		modelRuntime: { getModel: () => ({ id: "m", provider: "p", contextWindow: 100_000 }) },
 		thinkingLevel: "off",
 		extensions: [],
 	});
@@ -112,6 +112,7 @@ const args = {
 	setActiveToolsByName: [[]],
 	executeBash: ["true"],
 	getUserMessagesForForking: [],
+	recordBashResult: ["printf hi", { output: "hi", exitCode: 0, cancelled: false, truncated: false }],
 };
 const rows = [];
 const receivers = { session: first.session, sessionManager: first.sessionManager, services: first.services, runtimeHost: first };

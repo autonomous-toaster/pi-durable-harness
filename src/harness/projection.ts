@@ -15,7 +15,18 @@ export type ControlData =
 	| { readonly type: "model_change"; readonly provider: string; readonly modelId: string }
 	| { readonly type: "thinking_level_change"; readonly level: string }
 	| { readonly type: "session_info"; readonly name?: string }
-	| { readonly type: "label"; readonly label: string };
+	| { readonly type: "label"; readonly label: string }
+	/** A `!command` the user ran; pi keeps it in the transcript as a bashExecution message. */
+	| {
+			readonly type: "bash_result";
+			readonly command: string;
+			readonly output: string;
+			readonly exitCode?: number;
+			readonly cancelled: boolean;
+			readonly truncated: boolean;
+			readonly fullOutputPath?: string;
+			readonly excludeFromContext: boolean;
+	  };
 
 /** Append-only control-plane history (task 5.2). */
 export const ControlEntry = defineEntry<ControlData>("harness.control");
@@ -48,6 +59,24 @@ function controlEntry(entry: EntryRecord, parentId: string | null, data: Control
 			return { ...base, type: "session_info", name: data.name };
 		case "label":
 			return { ...base, type: "label", label: data.label };
+		case "bash_result":
+			// pi renders this role with its own BashExecutionComponent, so projecting the
+			// control entry as that message is what draws it after a reload.
+			return {
+				...base,
+				type: "message",
+				message: {
+					role: "bashExecution",
+					command: data.command,
+					output: data.output,
+					exitCode: data.exitCode,
+					cancelled: data.cancelled,
+					truncated: data.truncated,
+					fullOutputPath: data.fullOutputPath,
+					excludeFromContext: data.excludeFromContext,
+					timestamp: Date.now(),
+				},
+			};
 		default:
 			// A control entry whose payload this build does not know is kept verbatim.
 			return { ...base, type: "custom", customType: entry.kind, data };

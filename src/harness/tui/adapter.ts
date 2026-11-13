@@ -312,7 +312,12 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 					announce({ type: "entry_appended", entry: projectedOf(entry) });
 					// A message entry is announced as the message pair the TUI draws
 					// (pi's AgentSessionEvent carries the message, not the entry).
-					const message = (entry as { readonly model?: readonly { readonly role?: string }[] }).model?.[0];
+					// A control entry that projects to a message (a stored `!command`) is drawn
+					// from that message, so it appears without waiting for a reload.
+					const projected = projectedOf(entry) as { readonly type?: string; readonly message?: { readonly role?: string } };
+					const message =
+						(entry as { readonly model?: readonly { readonly role?: string }[] }).model?.[0] ??
+						(projected.type === "message" ? projected.message : undefined);
 					if (message !== undefined) {
 						noteToolCalls(message);
 						if (streaming !== undefined && message.role === "assistant") {
@@ -443,6 +448,23 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			compacting.delete(id);
 			announce({ type: "compaction_end", reason: "manual", result: undefined, aborted: false, willRetry: false });
 		}
+	};
+
+	/**
+	 * The context the next request carries, as pi reports it: the tokens of the last
+	 * assistant's usage against the model's window. `undefined` means unknown, which
+	 * pi's footer prints as 0.0% — so returning undefined always was the bug.
+	 */
+	const contextUsage = (): { readonly tokens: number | null; readonly contextWindow: number; readonly percent: number | null } | undefined => {
+		const contextWindow = (model as { readonly contextWindow?: number } | undefined)?.contextWindow ?? 0;
+		if (contextWindow <= 0) return undefined;
+		const last = (messages as readonly { readonly role?: string; readonly usage?: Record<string, number> }[])
+			.filter((message) => message.role === "assistant" && message.usage !== undefined)
+			.at(-1);
+		if (last?.usage === undefined) return { tokens: null, contextWindow, percent: null };
+		const tokens = (last.usage.input ?? 0) + (last.usage.cacheRead ?? 0) + (last.usage.cacheWrite ?? 0) + (last.usage.output ?? 0);
+		if (tokens <= 0) return { tokens: null, contextWindow, percent: null };
+		return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
 	};
 
 	/** The text of a message's content, for the editor after a rewind. */
@@ -708,7 +730,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		},
 		getLastAssistantText: () => lastAssistant,
 		get pendingMessageCount() {
-			return 0;
+			return steeringQueue.length + followQueue.length;
 		},
 		async waitForIdle() {
 			while (!(await engine.isQuiescent())) await new Promise((resolve) => setTimeout(resolve, 100));
@@ -821,7 +843,11 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			return next;
 		},
 		/** The TUI's `!command` runs in the session's cwd, as pi's does. */
-		async executeBash(command: string, onChunk?: (chunk: string) => void) {
+		async executeBash(
+			command: string,
+			onChunk?: (chunk: string) => void,
+			bashOptions?: { readonly excludeFromContext?: boolean },
+		) {
 			const settings = options.settingsManager as { getShellPath?: () => string | undefined; getShellCommandPrefix?: () => string | undefined };
 			const shell = settings.getShellPath?.() ?? process.env.SHELL ?? "/bin/sh";
 			const prefix = settings.getShellCommandPrefix?.();
@@ -838,13 +864,34 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			child.stderr?.on("data", collect);
 			const exitCode = await new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 0)));
 			bashProcess = undefined;
-			return { output, exitCode };
+			const result = { output, exitCode, cancelled: false, truncated: false };
+			// pi's own executeBash records the run in the transcript; the TUI's normal path
+			// calls this member and never recordBashResult, so a `!command` vanished.
+			(session as unknown as { recordBashResult: (command: string, result: unknown, options: unknown) => void }).recordBashResult(command, result, {
+				excludeFromContext: bashOptions?.excludeFromContext === true,
+			});
+			return result;
 		},
 		abortBash() {
 			bashProcess?.kill();
 			bashProcess = undefined;
 		},
-		recordBashResult: () => undefined,
+		recordBashResult: (
+			command: string,
+			result: { readonly output?: string; readonly exitCode?: number; readonly cancelled?: boolean; readonly truncated?: boolean; readonly fullOutputPath?: string },
+			options?: { readonly excludeFromContext?: boolean },
+		) => {
+			void engine.appendControl({
+				type: "bash_result",
+				command,
+				output: result.output ?? "",
+				...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+				cancelled: result.cancelled === true,
+				truncated: result.truncated === true,
+				...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
+				excludeFromContext: options?.excludeFromContext === true,
+			} as never);
+		},
 
 		// pi's loader owns the prompt templates; the TUI turns each into a `/name`
 		// command and expands it, so an empty list makes every `/name` a raw prompt.
@@ -859,10 +906,10 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			return idle;
 		},
 		get isCompacting() {
-			return false;
+			return compacting.size > 0;
 		},
 		get isBashRunning() {
-			return false;
+			return bashProcess !== undefined;
 		},
 		get autoCompactionEnabled() {
 			return true;
@@ -881,7 +928,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		get agent() {
 			return { state: {} };
 		},
-		getContextUsage: () => undefined,
+		// pi reads { tokens, contextWindow, percent }; undefined means "unknown", which is
+		// what it prints as 0.0%. The last assistant usage is the context it was sent.
+		getContextUsage: () => contextUsage(),
 		getAvailableThinkingLevels: () => ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 		getActiveToolNames: () => [...engine.declaredToolNames()],
 		getCallableToolNames: () => [...engine.declaredToolNames()],
