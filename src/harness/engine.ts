@@ -102,22 +102,22 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 	if (config.ephemeral) {
 		return { storage: new MemoryStorage(), close: async () => {} };
 	}
-	if (config.databaseUrl !== undefined) {
+	if (config.pg !== undefined) {
 		// Loaded on demand: the backends pull large libraries, and Node 22 warns
 		// about `node:sqlite` the moment it is required — even for `--help`.
 		const [{ default: pg }, { openPostgresStorage }] = await Promise.all([
 			import("pg"),
 			import("../storage/postgres/storage.js"),
 		]);
-		const { poolOptions, assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
-		const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl, config.pgSsl);
-		// The policy reads app.session; setting it at startup means every connection the
-		// pool opens is already scoped, not only the one the database grabs.
-		// The session GUC scopes the policy; the role is assumed by the setup statements,
-		// which must run as the connecting user to be allowed to create it.
-		const scope = { options: `-c app.session=${sessionPrefix(config.tenant, key)}` };
-		const pool: Pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }), ...scope });
-		if (enforce) {
+		const { connectionOptions, describeConnection } = await import("../storage/postgres/connection.js");
+		const { assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
+		const connectionString = describeConnection(config.pg);
+		// The policy reads app.session, so every connection the pool opens is scoped. The
+		// session option goes last, after any inherited options.
+		const pool: Pool = new pg.Pool(
+			connectionOptions(config.pg, `-c app.session=${sessionPrefix(config.tenant, key)}`) as never,
+		);
+		if (config.pg.ssl.enforce) {
 			const probe = await pool.connect().catch(async (error: unknown) => {
 				const hint = connectionHint(connectionString, error);
 				await pool.end().catch(() => {});

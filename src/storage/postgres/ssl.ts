@@ -1,12 +1,14 @@
 /**
- * TLS for the PostgreSQL backend, driven by the URL and by environment variables.
+ * TLS for the PostgreSQL backend: a mode, and the certificates that make the
+ * verifying modes possible.
  *
- * `sslmode` in the URL is honoured (`disable`, `require`, `verify-ca`,
- * `verify-full`); `PI_DURABLE_PG_SSL` overrides it, and a CA given with
- * `PI_DURABLE_PG_SSL_CA` is what makes verification possible. Enforced TLS means a
- * connection that turns out not to be encrypted is refused rather than silently
- * used, which the URL alone cannot promise: a server may accept `sslmode=prefer`
- * and answer in clear text.
+ * The names are libpq's, behind our prefix: `PI_DURABLE_PGSSLMODE`,
+ * `PI_DURABLE_PGSSLROOTCERT`, `PI_DURABLE_PGSSLCERT`, `PI_DURABLE_PGSSLKEY`. The bare
+ * names are read as a fallback, through the same field order the connection uses.
+ *
+ * Two of libpq's modes are refused. `allow` and `prefer` both describe a plaintext
+ * fallback, and this backend has none: a mode that promises to prove the peer must
+ * fail rather than quietly encrypt less.
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -57,32 +59,39 @@ export function sslModeFromUrl(url: string | undefined): SslMode | undefined {
  * Decide what to hand `pg` and whether to insist on TLS. A verification mode needs
  * a CA; `disable` alongside an enforcing request is refused rather than ignored.
  */
-export function resolveSsl(options: { readonly url?: string; readonly env: Record<string, string | undefined> }): SslDecision {
-	const explicit = options.env.PI_DURABLE_PG_SSL;
-	if (explicit !== undefined && !(MODES as readonly string[]).includes(explicit)) {
-		throw new SslConfigError(`PI_DURABLE_PG_SSL must be one of ${MODES.join(", ")}`);
+export function resolveSsl(options: {
+	readonly url?: string | undefined;
+	readonly env: Record<string, string | undefined>;
+	/** Already resolved from the prefixed name, the URL, and the standard name. */
+	readonly mode?: string | undefined;
+	readonly rootCertificate?: string | undefined;
+	readonly certificate?: string | undefined;
+	readonly key?: string | undefined;
+}): SslDecision {
+	const requested = options.mode ?? sslModeFromUrl(options.url);
+	// The two modes that need a plaintext fallback, which this backend does not have.
+	if (requested === "allow" || requested === "prefer") {
+		throw new SslConfigError(
+			`PGSSLMODE=${requested} asks for a plaintext fallback, which this backend has none: use one of ${MODES.join(", ")}`,
+		);
 	}
-	const mode = (explicit as SslMode | undefined) ?? sslModeFromUrl(options.url);
-	const enforceRequested = options.env.PI_DURABLE_PG_REQUIRE_SSL === "1" || options.env.PI_DURABLE_PG_REQUIRE_SSL === "true";
-	if (mode === "disable") {
-		if (enforceRequested) throw new SslConfigError("PI_DURABLE_PG_REQUIRE_SSL is set but the SSL mode is disable");
-		return { mode, enforce: false };
+	if (requested !== undefined && !(MODES as readonly string[]).includes(requested)) {
+		throw new SslConfigError(`PI_DURABLE_PGSSLMODE must be one of ${MODES.join(", ")}`);
 	}
-	if (mode === undefined) {
-		// Nothing asked for TLS, but the operator may still insist on it.
-		if (enforceRequested) throw new SslConfigError("PI_DURABLE_PG_REQUIRE_SSL is set but no SSL mode is configured");
-		return { mode: "disable", enforce: false };
-	}
-	const caPath = options.env.PI_DURABLE_PG_SSL_CA;
+	const mode = requested as SslMode | undefined;
+	if (mode === undefined || mode === "disable") return { mode: mode ?? "disable", enforce: false };
+	const caPath = options.rootCertificate;
 	const verifies = mode === "verify-ca" || mode === "verify-full";
-	if (verifies && caPath === undefined) {
-		throw new SslConfigError(`${mode} needs a CA: set PI_DURABLE_PG_SSL_CA to the server certificate's authority`);
+	if (verifies && (caPath === undefined || caPath === "")) {
+		throw new SslConfigError(
+			`${mode} needs a root certificate: set PI_DURABLE_PGSSLROOTCERT to the authority that signed the server's certificate`,
+		);
 	}
-	const ca = caPath === undefined ? undefined : readPem(caPath, "PI_DURABLE_PG_SSL_CA");
-	const certPath = options.env.PI_DURABLE_PG_SSL_CERT;
-	const keyPath = options.env.PI_DURABLE_PG_SSL_KEY;
+	const ca = caPath === undefined ? undefined : readPem(caPath, "PI_DURABLE_PGSSLROOTCERT");
+	const certPath = options.certificate;
+	const keyPath = options.key;
 	if ((certPath === undefined) !== (keyPath === undefined)) {
-		throw new SslConfigError("PI_DURABLE_PG_SSL_CERT and PI_DURABLE_PG_SSL_KEY must be set together");
+		throw new SslConfigError("PI_DURABLE_PGSSLCERT and PI_DURABLE_PGSSLKEY must be set together");
 	}
 	return {
 		mode,
@@ -90,8 +99,8 @@ export function resolveSsl(options: { readonly url?: string; readonly env: Recor
 		enforce: true,
 		ssl: {
 			...(ca === undefined ? {} : { ca }),
-			...(certPath === undefined ? {} : { cert: readPem(certPath, "PI_DURABLE_PG_SSL_CERT") }),
-			...(keyPath === undefined ? {} : { key: readPem(keyPath, "PI_DURABLE_PG_SSL_KEY") }),
+			...(certPath === undefined ? {} : { cert: readPem(certPath, "PI_DURABLE_PGSSLCERT") }),
+			...(keyPath === undefined ? {} : { key: readPem(keyPath, "PI_DURABLE_PGSSLKEY") }),
 			rejectUnauthorized: verifies,
 			...(options.env.PI_DURABLE_PG_SSL_SERVERNAME === undefined
 				? {}
@@ -148,21 +157,6 @@ export function missingTenant(url: string): string | undefined {
 	}
 }
 
-/** The pool options for a database URL and an already-resolved TLS decision. */
-export function poolOptions(
-	url: string,
-	decision: SslDecision = resolveSsl({ url, env: process.env }),
-): { readonly connectionString: string; readonly ssl?: SslDecision["ssl"]; readonly enforce: boolean } {
-	// A pooler that identifies its tenant from SNI needs the name sent, and node only
-	// sends it when `ssl` is an object it can read a servername from.
-	const servername = decision.ssl?.servername ?? (decision.ssl === undefined ? undefined : hostnameOf(url));
-	return {
-		connectionString: url,
-		...(decision.ssl === undefined ? {} : { ssl: { ...decision.ssl, ...(servername === undefined ? {} : { servername }) } }),
-		enforce: decision.enforce,
-	};
-}
-
 /**
  * Refuse a connection that is not encrypted. `pg_stat_ssl` reports what the server
  * actually negotiated, so this catches a server that accepted the handshake
@@ -172,6 +166,6 @@ export async function assertEncrypted(executor: { query(sql: string): Promise<{ 
 	const result = await executor.query("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()");
 	const row = result.rows[0] as { readonly ssl?: boolean } | undefined;
 	if (row?.ssl !== true) {
-		throw new SslConfigError("The database connection is not encrypted (enforced by PI_DURABLE_PG_SSL)");
+		throw new SslConfigError("The database connection is not encrypted (enforced by PI_DURABLE_PGSSLMODE)");
 	}
 }

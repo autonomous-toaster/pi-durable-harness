@@ -99,10 +99,11 @@ npm install && npm run build
 **3. Point it at PostgreSQL** (unset this variable to fall back to local SQLite):
 
 ```bash
-export PI_DURABLE_DATABASE_URL='postgres://harness:harness@127.0.0.1:55432/harness'
-# A managed server: prove it with its CA and refuse anything unencrypted.
-export PI_DURABLE_PG_SSL='verify-full'
-export PI_DURABLE_PG_SSL_CA="$HOME/Downloads/ca.pem"
+export PI_DURABLE_DATABASE_URL='postgres://harness@127.0.0.1:55432/harness'
+export PGPASSWORD='harness'          # the password stays out of the URL
+# A managed server: prove it with its root certificate.
+export PI_DURABLE_PGSSLMODE='verify-full'
+export PI_DURABLE_PGSSLROOTCERT="$HOME/.config/ca.pem"
 ```
 
 **4. First run — a new session `demo` and one prompt.**
@@ -213,15 +214,33 @@ Without a positional prompt, a terminal gets **the TUI** (pi's own interface, se
 
 Environment variables:
 
+A connection field resolves from `PI_DURABLE_` plus the libpq name, then the URL,
+then the bare libpq name, then a default — so a declared value beats an inherited one,
+and the bare names still serve a shell shared with `psql`. Only a prefixed setting
+selects PostgreSQL: a stray `PGHOST` never moves a session to another server.
+
+```text
+PI_DURABLE_<NAME>   >   URL part   >   <NAME>   >   default
+```
+
+**Breaking in 1.5.2:** `PI_DURABLE_PG_SSL` is now `PI_DURABLE_PGSSLMODE`,
+`PI_DURABLE_PG_SSL_CA` is `PI_DURABLE_PGSSLROOTCERT`, `PI_DURABLE_PG_SSL_CERT` is
+`PI_DURABLE_PGSSLCERT`, `PI_DURABLE_PG_SSL_KEY` is `PI_DURABLE_PGSSLKEY`, and
+`PI_DURABLE_PG_REQUIRE_SSL` is gone: `PI_DURABLE_PGSSLMODE=require` states the same
+requirement.
+
 | Variable | Effect |
 | --- | --- |
-| `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. |
-| `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `durable`). |
-| `PI_DURABLE_PG_SSL` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a CA. |
-| `PI_DURABLE_PG_SSL_CA` | CA certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |
-| `PI_DURABLE_PG_SSL_CERT` / `PI_DURABLE_PG_SSL_KEY` | Client certificate and key in PEM, for mutual TLS. Set both or neither. |
-| `PI_DURABLE_PG_SSL_SERVERNAME` | The name the server certificate must carry, when it differs from the host in the URL. |
-| `PI_DURABLE_PG_REQUIRE_SSL` | `1` refuses a connection that is not encrypted, even when the URL asked for none. |
+| `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. The URL is one way to name a server, not the only one. |
+| `PI_DURABLE_PG` | `1` selects PostgreSQL without a URL, so the fields below describe the server. |
+| `PI_DURABLE_PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | The connection fields, each `PI_DURABLE_` plus the libpq name. `PGPASSWORD` keeps the password out of the URL and out of shell history. |
+| `PI_DURABLE_PGSSLMODE` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a root certificate. `allow` and `prefer` are refused: this backend never falls back to plaintext. |
+| `PI_DURABLE_PGSSLROOTCERT` | Root certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |
+| `PI_DURABLE_PGSSLCERT` / `PI_DURABLE_PGSSLKEY` | Client certificate and key in PEM, for mutual TLS. Set both or neither. |
+| `PI_DURABLE_PG_SSL_SERVERNAME` | The name the server certificate must carry, when it differs from the host. Not a libpq name, hence the extra underscore. |
+| `PI_DURABLE_PGOPTIONS` | Connection options, passed before the session's own option. |
+| `PI_DURABLE_PGAPPNAME` / `PI_DURABLE_PGCONNECT_TIMEOUT` | `application_name`, and the connect timeout in seconds. |
+| `PI_DURABLE_PG_SCHEMA` | The one PostgreSQL schema every session opens inside (default `durable`). Our setting, not a libpq name. |
 | `PI_DURABLE_PERSIST_WITHIN_MS` | How long a deferred progress commit may stay in memory before it is stored. Default `0` (store each partial at once). A non-zero value batches streamed progress and loses up to that much on a crash. |
 | `PI_CODING_AGENT_DIR` | Config directory (default `~/.pi/agent`); tilde is expanded. |
 | `PI_CODING_AGENT_SESSION_DIR` | Overrides the local session directory. |

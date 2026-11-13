@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { resolveSsl } from "../storage/postgres/ssl.js";
+import { resolveConnection, selectsPostgres } from "../storage/postgres/connection.js";
 
 /** The one PostgreSQL schema every session opens inside unless PI_DURABLE_PG_SCHEMA says otherwise. */
 export const DEFAULT_SCHEMA = "durable";
@@ -42,9 +42,13 @@ export interface HarnessConfig {
 	readonly model: string | undefined;
 	readonly thinking: string | undefined;
 	readonly name: string | undefined;
+	/**
+	 * The PostgreSQL connection, resolved once so a bad certificate setup fails at
+	 * startup. `undefined` selects SQLite, and only a prefixed setting may select it.
+	 */
+	readonly pg: import("../storage/postgres/connection.js").PgConnection | undefined;
+	/** The URL the operator gave, when there was one. */
 	readonly databaseUrl: string | undefined;
-	/** TLS for the database, resolved once so a bad certificate setup fails at startup. */
-	readonly pgSsl: import("../storage/postgres/ssl.js").SslDecision | undefined;
 	/** `--system-prompt`: replaces the built-in preamble. */
 	readonly systemPrompt: string | undefined;
 	/** `--append-system-prompt`: each occurrence, in argv order, after text-or-file resolution. */
@@ -174,6 +178,10 @@ export function resolveConfig(
 	// `--session-id` wins when both are given; the name is never identity (task 1.4).
 	const sessionKey = text("session-id") ?? text("session");
 	const ephemeral = flag("no-session");
+	// A local flag keeps the session local: only `--no-session` and a named session
+	// directory decide that, and neither turns a declared server into a URL for it.
+	const localOnly = ephemeral || text("session-dir") !== undefined;
+	const usePostgres = !localOnly && selectsPostgres(env);
 	const forkFrom = text("fork");
 	if (forkFrom !== undefined && (flag("continue") || text("session") !== undefined)) {
 		warnings.push("--fork ignores --continue and --session; it copies into --session-id or a new session");
@@ -237,7 +245,7 @@ export function resolveConfig(
 		thinking: text("thinking"),
 		name: text("name"),
 		databaseUrl: env.PI_DURABLE_DATABASE_URL,
-		pgSsl: env.PI_DURABLE_DATABASE_URL === undefined ? undefined : resolveSsl({ url: env.PI_DURABLE_DATABASE_URL, env }),
+		pg: usePostgres ? resolveConnection({ url: env.PI_DURABLE_DATABASE_URL, env }) : undefined,
 		systemPrompt,
 		appendSystemPrompt,
 		skillPaths: list("skill"),

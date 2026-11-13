@@ -80,10 +80,13 @@ async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<voi
 
 /** A short-lived pool over the configured database. */
 async function withPool<T>(config: HarnessConfig, use: (client: pg.PoolClient) => Promise<T>): Promise<T | undefined> {
-	if (config.databaseUrl === undefined) return undefined;
-	const { poolOptions, assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
-	const { connectionString, ssl, enforce } = poolOptions(config.databaseUrl, config.pgSsl);
-	const pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }) });
+	if (config.pg === undefined) return undefined;
+	const { assertEncrypted, connectionHint } = await import("../storage/postgres/ssl.js");
+	const { connectionOptions, describeConnection } = await import("../storage/postgres/connection.js");
+	const connectionString = describeConnection(config.pg);
+	// No session scope here: the catalog is shared, and its rows carry the tenant,
+	// the directory, and the session instead.
+	const pool = new pg.Pool(connectionOptions(config.pg) as never);
 	const client = await pool.connect().catch(async (error: unknown) => {
 		// A swallowed connection error left the operator reading a bare driver message.
 		const hint = connectionHint(connectionString, error);
@@ -94,7 +97,7 @@ async function withPool<T>(config: HarnessConfig, use: (client: pg.PoolClient) =
 	});
 	if (client === undefined) return undefined;
 	try {
-		if (enforce) await assertEncrypted(client);
+		if (config.pg.ssl.enforce) await assertEncrypted(client);
 		return await use(client);
 	} finally {
 		client.release();
@@ -157,7 +160,7 @@ export interface ResolvedSession {
 export async function resolveSession(config: HarnessConfig): Promise<ResolvedSession> {
 	if (config.sessionKey !== undefined) return { id: config.sessionKey };
 	if (!config.continueSession) return { id: newSessionId() };
-	const latest = config.databaseUrl === undefined ? await newestFile(config) : await newestInCatalog(config);
+	const latest = config.pg === undefined ? await newestFile(config) : await newestInCatalog(config);
 	if (latest === undefined || latest === "") {
 		return { id: newSessionId(), warning: `no session to continue for ${config.cwd}; starting a new one` };
 	}

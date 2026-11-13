@@ -89,15 +89,23 @@ Other:
 Accepted for pi compatibility and not acted on:
   --export, --theme
 
-Environment:
-  PI_DURABLE_DATABASE_URL        PostgreSQL URL; unset stores in SQLite
-  PI_DURABLE_PG_SCHEMA           schema for PostgreSQL sessions (default: durable)
-  PI_DURABLE_PG_SSL              disable, require, verify-ca, or verify-full
-  PI_DURABLE_PG_SSL_CA           CA certificate in PEM, needed by verify-ca and verify-full
-  PI_DURABLE_PG_SSL_CERT         client certificate in PEM, with PI_DURABLE_PG_SSL_KEY
-  PI_DURABLE_PG_SSL_KEY          client private key in PEM
+Environment (PostgreSQL; each prefixed name wins over the bare libpq name):
+  PI_DURABLE_DATABASE_URL        server URL; unset stores in SQLite
+  PI_DURABLE_PG=1                select PostgreSQL without a URL
+  PI_DURABLE_PGHOST              server host, or PGHOST
+  PI_DURABLE_PGPORT              server port, or PGPORT
+  PI_DURABLE_PGUSER              user, or PGUSER
+  PI_DURABLE_PGPASSWORD          password, or PGPASSWORD
+  PI_DURABLE_PGDATABASE          database, or PGDATABASE
+  PI_DURABLE_PGSSLMODE           disable, require, verify-ca, or verify-full
+  PI_DURABLE_PGSSLROOTCERT       root certificate in PEM, needed by verify-ca and verify-full
+  PI_DURABLE_PGSSLCERT           client certificate in PEM, with PI_DURABLE_PGSSLKEY
+  PI_DURABLE_PGSSLKEY            client private key in PEM
   PI_DURABLE_PG_SSL_SERVERNAME   name the server certificate must carry
-  PI_DURABLE_PG_REQUIRE_SSL=1    refuse a connection that is not encrypted
+  PI_DURABLE_PGOPTIONS           connection options, before the session scope
+  PI_DURABLE_PGAPPNAME           application_name
+  PI_DURABLE_PGCONNECT_TIMEOUT   connect timeout in seconds
+  PI_DURABLE_PG_SCHEMA           schema for PostgreSQL sessions (default: durable)
   PI_DURABLE_PERSIST_WITHIN_MS   deferred progress window; 0 stores each partial
   PI_CODING_AGENT_DIR            config directory (default: ~/.pi/agent)
   PI_CODING_AGENT_SESSION_DIR    overrides the SQLite session directory
@@ -226,10 +234,12 @@ async function askProjectTrust(
 export async function main(argv: readonly string[]): Promise<void> {
 	const config = resolveConfig(argv, process.env);
 	for (const warning of config.warnings) process.stderr.write(`pi-durable: ${warning}\n`);
-	if (config.databaseUrl !== undefined) {
-		// Said before connecting, because the pooler's answer is cryptic.
+	if (config.pg !== undefined) {
+		// Said before connecting, because the pooler's answer is cryptic. The URL may be
+		// absent when the operator named the fields instead.
 		const { missingTenant } = await import("./storage/postgres/ssl.js");
-		const tenant = missingTenant(config.databaseUrl);
+		const { describeConnection } = await import("./storage/postgres/connection.js");
+		const tenant = missingTenant(describeConnection(config.pg));
 		if (tenant !== undefined) process.stderr.write(`pi-durable: ${tenant}\n`);
 	}
 	if (config.help) {
@@ -501,7 +511,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 				cwd: config.cwd,
 				agentDir: config.agentDir,
 				sessionId: key,
-				...(config.databaseUrl === undefined
+				...(config.pg === undefined
 					? { sessionFile: sessionFile(config, key) }
 					: { sessionFile: `postgres:${config.schema}/${config.tenant}__${key}` }),
 				settingsManager,
