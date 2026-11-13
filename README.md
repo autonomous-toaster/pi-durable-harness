@@ -190,7 +190,8 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `-p`, `--print` | One-shot: run the prompts, write the final answer text, then exit |
 | `--mode json` | One-shot: write a session header and then JSONL events, then exit |
 | `--mode text` (default) | One-shot print when a prompt is given |
-| `--mode rpc` | Serve RPC on stdin; the default when no positional prompt is given |
+| `--mode rpc` | Serve RPC on stdin; what a pipe gets when no positional prompt is given |
+| `--mode tui` | Force pi's TUI, where a terminal would not select it |
 | `--` | Stop option parsing, so a prompt may begin with `-` |
 | `@path` | Include a text file or an image in the first prompt |
 | piped stdin | Prepended to the first prompt when stdin is not a terminal |
@@ -208,7 +209,7 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `--fork <id>` | Copy a session into a new one in this directory (`--session-id` names it) |
 | `--offline` / `-h, --help` | Offline mode / usage |
 
-Without a positional prompt the harness serves RPC. A positional prompt selects a one-shot mode and the process exits `0` when the prompt is answered (non-zero otherwise). There is no interactive TUI: a terminal client uses RPC mode, so a prompt always runs one shot.
+Without a positional prompt, a terminal gets **the TUI** (pi's own interface, see [The TUI](#the-tui)); a pipe or `--mode rpc` serves RPC instead. A positional prompt selects a one-shot mode and the process exits `0` when the prompt is answered (non-zero otherwise). `--mode tui` forces the TUI where it would not be selected.
 
 Environment variables:
 
@@ -258,7 +259,7 @@ Settings that the harness reads live at every use (steering/follow-up mode, comp
 - **Prompt templates** appear in `get_commands` with `source: "prompt"`.
 - **Themes** are discovered but not used (the RPC surface has no terminal to apply them to).
 
-Project resources are gated on trust: `AGENTS.md`, project skills, and other project resources load only when the project is trusted (`SettingsManager.isProjectTrusted()`), matching pi's order (trust, then project resources).
+Project resources are gated on trust: `AGENTS.md`, project prompts, project skills, and other project resources load only when the project is trusted, resolved through pi's `ProjectTrustStore` so a decision saved for a parent folder applies — matching pi's order (trust, then project resources).
 
 ## Storage
 
@@ -270,22 +271,34 @@ Storage is selected by configuration and is invisible to the client.
 | **SQLite** | default | One file per session at `<sessionDir>/<cwd>/<tenant>__<session>.sqlite`, via `node:sqlite`. The directory groups a working directory's sessions and the file's modification time answers `-c`. |
 | **Memory** | `--no-session` | Ephemeral. |
 
-PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. Durable's own migrations run through the facade. It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.
+PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. The backend creates the schema itself, in its final shape, and records durable's current schema version — so the core's migration pass, which exists to upgrade databases an older build made, has nothing to apply. Six references the portable core cannot declare are added after the tables: entries, tasks, and submissions to their conversation, a conversation to its owner conversation and to its task, and a document revision to its document. They are `DEFERRABLE INITIALLY DEFERRED`, because durable writes a conversation before the task that owns it.
+
+One session writes a storage at a time, as durable requires. The advisory lock is keyed on the schema and the session's prefix; a second process on the same session is refused, and told which session it was:
+
+```text
+pi-durable: session <id> is open in another process (schema durable); this process cannot write to it.
+  Continue in a new session:      pi-durable
+  Continue in a fork of it:       pi-durable --fork <session-id>
+  Or name another session:        pi-durable --session-id <id>
+```
+
+It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.
 
 ## The TUI
 
 Run it with no mode and no prompt on a terminal:
 
 ```bash
-npm run build:tui        # dist/ plus the pi-tui native helper for this platform
+npm run build:tui        # dist/ + dist/sea/pi-durable (the TUI inside it)
 node dist/cli.js         # pi's own InteractiveMode, over durable state
+./dist/sea/pi-durable    # the same TUI, with no Node installed
 ```
 
 The TUI is **pi's own interface code**, not a reimplementation: `dist/cli.js` hands pi's `InteractiveMode` a runtime served by the durable engine, so every row, selector, keybinding, and slash command is pi's. `--mode rpc` and a piped stdin keep the headless behaviour, and `--mode tui` forces the TUI on a non-terminal.
 
 What is durable: the transcript, the session identity, the agent's model and thinking level, the active tool set, labels and custom entries, and the event stream the TUI renders. What is pi's: the layout, the editor, the selectors, the extension renderers, and the commands.
 
-- The TUI is **not a single-file artifact**: `pi-tui` loads a native module from its own package, so the build needs the installed package tree. `npm run build:tui` proves the helper resolves.
+- The TUI needs `pi-tui`'s **native terminal helper**, a platform addon it loads by path. The ESM build resolves it from the installed package tree; the executable cannot, so `scripts/build-sea.mjs` copies it beside the binary (`dist/sea/native/<platform>/prebuilds/<platform>-<arch>/`), which is the last place pi-tui looks.
 - Extensions render through **pi's runner** — bound beside the durable host with the TUI's UI context — while execution stays on the durable host, so a hook runs once.
 - Node flags go through the environment, as for the SEA binary: `NODE_OPTIONS=--trace-warnings node dist/cli.js`.
 
@@ -398,6 +411,18 @@ TEST_LIVE_MODEL=1 node --test test/progress-window.test.mjs   # opt-in: progress
 # test/event-fixture.test.mjs replays the pinned run against a mock model and
 # compares the projected records with test/fixtures/pi-1.5.2/events.ndjson
 ```
+
+TUI parity is measured, not asserted by eye:
+
+```bash
+node tools/tui-surface.mjs --check   # every member pi's TUI names, and its return shape
+node tools/tui-gaps.mjs --check      # every event pi's TUI handles; gaps carry a reason
+node tools/tui-ab.mjs                # the same scenario in pi and here, then a diff
+node tools/tui-ab.mjs --all          # adds the slow scenarios (ctrl-o, escape, ctrl-r)
+node tools/tui-ab.mjs --list         # what the matrix covers
+```
+
+`tui-surface` and `tui-gaps` run inside `npm run check`, so a pi upgrade that adds a member, changes a return shape, or names a new event fails the suite before it can crash a keystroke. `tui-ab` runs both TUIs in tmux over `~/.pi-durable/agent` (override with `PI_DURABLE_AGENT_DIR`), one fresh pair per scenario, and compares the screens after normalizing counts, timings, and paths.
 
 Start PostgreSQL as in [Full example: podman + PostgreSQL](#full-example-podman--postgresql).
 
