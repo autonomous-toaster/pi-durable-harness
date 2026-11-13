@@ -12,6 +12,7 @@ import {
 	resolveModelScopeWithDiagnostics,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { dirname, relative } from "node:path";
 import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
@@ -44,6 +45,12 @@ import { loadMcpTools } from "./tools/mcp.js";
 import { computeActivation, computeDeclaredTools } from "./tools/activate.js";
 import { setMcpEntries } from "./tools/state.js";
 import type { RegisteredMcpServer } from "./tools/exposure.js";
+
+// pi loads an OAuth flow with a URL relative to its own module, which a bundle
+// cannot honour: every module inlines to one URL. pi-ai exports its statically
+// bundled flows for that case; the bundler inlines them here, and the plain
+// `dist/` build reaches the same files through the package exports map.
+registerBunOAuthFlows();
 
 const USAGE = `pi-durable — pi-RPC-compatible harness backed by Pi Durable
 
