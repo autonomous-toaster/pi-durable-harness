@@ -12,7 +12,7 @@ import pg from "pg";
 import type { Pool, PoolClient } from "pg";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { translateStatement } from "./ddl.js";
-import { addForeignKeys, applyLayout, dropForeignKeys, scopeRoleSetup, type TranslationContext } from "./layout.js";
+import { addForeignKeys, applyLayout, scopeRoleSetup, type TranslationContext } from "./layout.js";
 
 let typesConfigured = false;
 
@@ -160,9 +160,6 @@ export class PostgresDatabase implements SqliteDatabase {
 			// The policy reads this; set here as well, so a pool without the startup
 			// option still scopes its rows instead of writing them with a NULL session.
 			if (options !== undefined) {
-				// Migrations may rebuild a table a reference points at, so the references
-				// are removed for the migration pass and put back by the caller after it.
-				for (const statement of dropForeignKeys()) await client.query(statement);
 				// The role must be assumed before anything is written, and the policy reads
 				// the GUC this sets.
 				for (const statement of scopeRoleSetup(schema)) await client.query(statement);
@@ -185,7 +182,36 @@ export class PostgresDatabase implements SqliteDatabase {
 		return next;
 	}
 
-	/** Put the references back once the migrations have run. */
+	/**
+	 * Create the schema if it is absent, and record the version this build writes. A
+	 * schema already at another version is refused rather than migrated: this backend
+	 * creates one shape, and the migration history exists for databases it never made.
+	 */
+	async ensureSchema(statements: readonly string[], version: number, session: string): Promise<void> {
+		const executor = new PostgresExecutor(this.#client, this.#layout);
+		const exists = await this.#client.query<{ present: boolean }>("SELECT to_regclass($1) IS NOT NULL AS present", ["durable_schema"]);
+		const present = exists.rows[0]?.present === true;
+		// The tables are shared, but a session's own rows are not: a new session seeds its
+		// metadata row into the tables the first one created. Both steps are idempotent.
+		const seeded =
+			present &&
+			(await executor.get("SELECT 1 AS one FROM durable_metadata WHERE singleton = 1")) !== undefined;
+		if (!present || !seeded) {
+			for (const statement of statements) await executor.exec(statement);
+		}
+		const found = await executor.get<{ version: number }>("SELECT version FROM durable_schema WHERE singleton = 1");
+		if (found === undefined) {
+			await executor.run("INSERT INTO durable_schema (singleton, version) VALUES (1, ?)", version);
+			return;
+		}
+		if (Number(found.version) !== version) {
+			throw new Error(
+				`schema ${session} is at version ${found.version}, and this build creates ${version}: start with an empty schema`,
+			);
+		}
+	}
+
+	/** Put the references in place once the tables exist. */
 	async applyReferences(): Promise<void> {
 		for (const statement of addForeignKeys()) await this.#client.query(statement);
 	}

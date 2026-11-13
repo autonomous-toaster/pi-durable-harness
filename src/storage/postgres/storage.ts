@@ -9,6 +9,7 @@
 import type { Pool } from "pg";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { PostgresDatabase } from "./database.js";
+import { initialSchemaStatements, SCHEMA_VERSION } from "./schema.js";
 
 /**
  * Another process writes this session. The message names the session, which is what
@@ -52,8 +53,11 @@ export async function openPostgresStorage(options: PostgresStorageOptions): Prom
 		if (!(await database.tryAdvisoryLock(advisoryKey(`${options.schema}\u0000${options.prefix}`)))) {
 			throw new SessionLockedError(options.session ?? options.prefix, options.schema);
 		}
+		// The backend creates the schema in its final shape and records the version, so
+		// the core's migration pass — which exists to upgrade older databases — has
+		// nothing to do.
+		await database.ensureSchema(initialSchemaStatements(), SCHEMA_VERSION, options.session ?? options.prefix);
 		const storage = await SqliteStorage.open(database, { prefix: options.prefix });
-		// The migrations create and rebuild tables; the references go on once they are done.
 		await database.applyReferences();
 		return storage;
 	} catch (error) {

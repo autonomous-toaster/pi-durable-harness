@@ -176,21 +176,6 @@ export function addForeignKeys(): string[] {
 	});
 }
 
-/**
- * The statements that take those references away again, before a migration runs. A
- * migration that rebuilds a table it references would otherwise fail on the drop.
- */
-export function dropForeignKeys(): string[] {
-	return FOREIGN_KEYS.map((key) =>
-		[
-			"DO $$ BEGIN",
-			`IF to_regclass('${key.table}') IS NOT NULL`,
-			`AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${key.name}' AND conrelid = to_regclass('${key.table}')) THEN`,
-			`ALTER TABLE ${key.table} DROP CONSTRAINT ${key.name};`,
-			"END IF; END $$",
-		].join(" "),
-	);
-}
 
 export interface TranslationContext {
 	readonly prefix: string;

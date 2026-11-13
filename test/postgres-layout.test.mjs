@@ -66,7 +66,7 @@ test("the storage layer takes no option to bypass the writer lock", async () => 
 });
 
 test("the backend declares the references the portable core cannot", async () => {
-	const { addForeignKeys, dropForeignKeys } = await import("../dist/storage/postgres/layout.js");
+	const { addForeignKeys } = await import("../dist/storage/postgres/layout.js");
 	const added = addForeignKeys();
 	assert.equal(added.length, 6);
 	// Every one is deferred: durable writes a conversation before the task that owns it,
@@ -75,7 +75,21 @@ test("the backend declares the references the portable core cannot", async () =>
 	assert.ok(added.some((sql) => /entries_conversation_fk/.test(sql) && /\(session, conversation_id\) REFERENCES conversations \(session, id\)/.test(sql)));
 	// The one child that is replaced wholesale carries its document with it.
 	assert.ok(added.some((sql) => /document_revisions_document_fk/.test(sql) && /ON DELETE CASCADE/.test(sql)));
-	// They are removed before a migration, since version 2 drops and renames tasks.
-	assert.equal(dropForeignKeys().length, 6);
-	for (const sql of dropForeignKeys()) assert.match(sql, /DROP CONSTRAINT/);
+});
+
+test("the backend creates the final schema, not durable's migration history", async () => {
+	const { initialSchemaStatements, SCHEMA_VERSION } = await import("../dist/storage/postgres/schema.js");
+	const statements = initialSchemaStatements();
+	const sql = statements.join("\n");
+	// The version table comes first, and is seeded by the backend, not by chord.
+	assert.match(statements[0], /CREATE TABLE durable_schema/);
+	// One definition per table: a rebuild's copy is never created.
+	assert.equal((sql.match(/CREATE TABLE tasks \(/g) ?? []).length, 1);
+	assert.doesNotMatch(sql, /tasks_v2/);
+	assert.doesNotMatch(sql, /DROP TABLE/);
+	// The tasks definition is the latest one, which is what a rebuild would have produced.
+	assert.match(sql, /status TEXT NOT NULL CHECK \(status IN \('pending', 'running', 'waiting', 'sleeping'/);
+	// The seed is repeatable, because every session seeds its own metadata row.
+	assert.match(sql, /INSERT OR IGNORE INTO durable_metadata/);
+	assert.ok(SCHEMA_VERSION >= 1);
 });
