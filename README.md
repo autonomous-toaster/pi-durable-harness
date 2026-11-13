@@ -284,6 +284,109 @@ pi-durable: session <id> is open in another process (schema durable); this proce
 
 It passes durable's storage conformance suite (32 cases) and behaves identically to `MemoryStorage` for a canonical script.
 
+### The PostgreSQL schema
+
+One table set for the whole schema, and every durable table leads with `session`, so a
+row belongs to exactly one session and every key is `(session, …)`. The diagram omits
+that column to stay readable; nothing else about the keys changes.
+
+```mermaid
+erDiagram
+    conversations ||--o{ entries : conversation_id
+    conversations ||--o{ tasks : conversation_id
+    conversations ||--o{ submissions : conversation_id
+    tasks ||--o{ conversations : owner_task_id
+    documents ||--o{ document_revisions : document_id
+
+    durable_schema {
+        integer singleton PK "always 1, per session"
+        integer version   "schema version this build writes"
+    }
+    durable_metadata {
+        integer singleton PK "always 1, per session"
+        text    next_id    "id counter the core caches"
+        integer next_seq
+    }
+    record_ids {
+        integer id PK
+        text    record_type "conversation, entry, task, submission, document"
+    }
+    conversations {
+        integer id PK
+        integer owner_conversation_id FK
+        integer owner_task_id FK
+        text    record
+    }
+    entries {
+        integer id PK
+        integer conversation_id FK
+        integer head
+        integer commit_seq
+        text    record
+    }
+    tasks {
+        integer id PK
+        integer conversation_id FK
+        text    kind
+        text    status "pending, running, waiting, sleeping, completing, terminal"
+        integer abort_requested
+        integer background
+        text    record
+    }
+    submissions {
+        integer id PK
+        integer conversation_id FK
+        integer request_id
+        text    status
+        text    record
+    }
+    documents {
+        integer id PK
+        text    kind
+        integer family
+        text    key_value
+        text    scope_kind
+        integer owner_id
+        integer created_at
+        integer retired_at
+        text    record
+    }
+    document_revisions {
+        integer document_id PK, FK
+        integer seq PK
+        text    kind "base or delta"
+        integer version
+        text    content
+    }
+    harness_sessions {
+        text   tenant PK
+        text   cwd PK
+        text   session PK
+        bigint last_used "answers -c"
+    }
+```
+
+`harness_sessions` is the harness's own catalog, not durable's: it has no `session`
+column and no policy, because it is what finds a session in the first place.
+
+| Table | Key | References | Enforced |
+| --- | --- | --- | --- |
+| `durable_schema` | `(session, singleton)` | — | version, so the core's migration pass applies nothing |
+| `durable_metadata` | `(session, singleton)` | — | the id and seq counters, one pair per session |
+| `record_ids` | `(session, id)` | — | every id durable ever minted, with its record type |
+| `conversations` | `(session, id)` | `conversations.id`, `tasks.id` | deferred foreign keys |
+| `entries` | `(session, id)` | `conversations.id` | deferred foreign key |
+| `tasks` | `(session, id)` | `conversations.id` | deferred foreign key |
+| `submissions` | `(session, id)` | `conversations.id` | deferred foreign key |
+| `documents` | `(session, id)` | — | `owner_id` is polymorphic through `scope_kind`, so no key |
+| `document_revisions` | `(session, document_id, seq)` | `documents.id` | deferred, `ON DELETE CASCADE` |
+| `harness_sessions` | `(tenant, cwd, session)` | — | the harness's catalog |
+
+Row-level security makes the session column mean something: a `session_scope` policy on
+every durable table compares `session` to `app.session`, which the pool sets on connect,
+and the session runs as the `durable_scope` role — a managed server's own role often
+carries `BYPASSRLS`, and a role that bypasses row-level security bypasses `FORCE` with it.
+
 ## The TUI
 
 Run it with no mode and no prompt on a terminal:
