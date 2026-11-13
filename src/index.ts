@@ -12,7 +12,7 @@ import {
 	resolveModelScopeWithDiagnostics,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { dirname } from "node:path";
+import { dirname, relative } from "node:path";
 import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
 import { copySession } from "./harness/fork.js";
@@ -103,6 +103,20 @@ Environment:
   PI_CODING_AGENT_SESSION_DIR    overrides the SQLite session directory
   PI_OFFLINE                     no network activity (same as --offline)
 `;
+
+/**
+ * How this process was started, so advice can be copied as it stands: the executable's
+ * own name for a SEA build, and `node <script>` (relative to the working directory)
+ * when run from source. Falls back to the installed command name.
+ */
+function invocation(): string {
+	const script = process.argv[1];
+	if (script !== undefined && /\.(c|m)?js$/.test(script)) {
+		const path = relative(process.cwd(), script);
+		return `node ${path.startsWith("..") ? script : path}`;
+	}
+	return "pi-durable";
+}
 
 /** Read all of piped stdin (task 1.2); the caller only does this for a non-terminal stdin. */
 async function readStdin(): Promise<string> {
@@ -421,9 +435,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 			process.stderr.write(
 				[
 					`pi-durable: ${held}; this process cannot write to it.`,
-					"  Continue in a new session:      node dist/cli.js",
-					"  Continue in a fork of it:       node dist/cli.js --fork <session-id>",
-					"  Or name another session:        node dist/cli.js --session-id <id>",
+					`  Continue in a new session:      ${invocation()}`,
+					`  Continue in a fork of it:       ${invocation()} --fork <session-id>`,
+					`  Or name another session:        ${invocation()} --session-id <id>`,
 					"",
 				].join("\n"),
 			);
