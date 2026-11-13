@@ -507,7 +507,7 @@ Shell tool commands receive pi's session metadata (`PI_SESSION_ID`, `PI_PROVIDER
 
 ## Transcript projection
 
-Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`) projects them to pi's session-entry shapes for `get_entries`, `get_tree`, and `export_html`. Control-plane transitions (model change, thinking level, session info, label) are recorded as an **append-only durable entry kind** so they project at their original position, and **unknown entry kinds are preserved verbatim**.
+Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`) projects them to pi's session-entry shapes for `get_entries`, `get_tree`, and `export_html`. Selecting a node in the tree rewinds the session: a user message rewinds to before it and returns its text to the editor, anything else rewinds to itself, and the session continues in a **fork** of the conversation, since durable transcripts have no leaf to move. The fork is recorded beside the session — in the catalog on PostgreSQL, in a small pointer file on SQLite — so a restart resumes there. A **branch summary** is pi's feature and durable has none, so the tree refuses that choice rather than navigating without it. Control-plane transitions (model change, thinking level, session info, label) are recorded as an **append-only durable entry kind** so they project at their original position, and **unknown entry kinds are preserved verbatim**.
 
 ## Limitations
 

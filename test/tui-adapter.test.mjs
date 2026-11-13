@@ -189,3 +189,52 @@ test("agent_end is announced after the run's messages, never before", async () =
 	assert.deepEqual(seen.slice(-3), ["entry_appended", "message_start", "message_end"], seen.join(","));
 	assert.equal(seen.includes("agent_end"), false, "the run was never running in this view");
 });
+
+// pi moves the tree's leaf and reads `result.aborted` off what the session returns:
+// returning nothing made selecting a node throw "Cannot read properties of undefined".
+test("selecting a user message rewinds to before it and returns its text", async () => {
+	const engine = fakeEngine();
+	const rewinds = [];
+	engine.rewind = async (at) => {
+		rewinds.push(at);
+		return "conversation-2";
+	};
+	const runtime = createTuiRuntime(engine, options);
+	await runtime.refresh();
+	const result = await runtime.session.navigateTree("1");
+	assert.deepEqual(rewinds, [null]);
+	assert.equal(result.cancelled, false);
+	assert.equal(result.editorText, "hello");
+});
+
+test("selecting an assistant message rewinds to that entry", async () => {
+	const engine = fakeEngine();
+	const rewinds = [];
+	engine.rewind = async (at) => {
+		rewinds.push(at);
+		return "conversation-2";
+	};
+	const runtime = createTuiRuntime(engine, options);
+	await runtime.refresh();
+	// A non-user node is the leaf itself; only a user message rewinds to before it.
+	const result = await runtime.session.navigateTree("2");
+	assert.deepEqual(rewinds, ["2"]);
+	assert.equal(result.cancelled, false);
+	assert.equal(result.editorText, undefined);
+});
+
+// A branch summary is pi's feature; durable has none, so the request is refused
+// rather than navigated without it.
+test("a branch summary request is refused, not silently skipped", async () => {
+	const engine = fakeEngine();
+	let rewound = false;
+	engine.rewind = async () => {
+		rewound = true;
+		return "conversation-2";
+	};
+	const runtime = createTuiRuntime(engine, options);
+	await runtime.refresh();
+	const result = await runtime.session.navigateTree("2", { summarize: true });
+	assert.deepEqual(result, { cancelled: false, aborted: true });
+	assert.equal(rewound, false);
+});

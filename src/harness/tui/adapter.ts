@@ -444,6 +444,15 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		}
 	};
 
+	/** The text of a message's content, for the editor after a rewind. */
+	const textOfContent = (content: unknown): string => {
+		if (typeof content === "string") return content;
+		if (!Array.isArray(content)) return "";
+		return content
+			.flatMap((block) => ((block as { readonly type?: string }).type === "text" ? [(block as { readonly text?: string }).text ?? ""] : []))
+			.join("");
+	};
+
 	/** Announce one tool slot as the start/update/end the TUI draws (task 5.1). */
 	const hasToolCalls = (message: unknown): boolean =>
 		((message as { readonly content?: unknown })?.content as readonly { readonly type?: string }[] | undefined)?.some?.(
@@ -906,7 +915,33 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		getFollowUpMessages: () => followQueue,
 		refreshContext: () => undefined,
 		rename: () => undefined,
-		navigateTree: () => undefined,
+		/**
+		 * pi moves the leaf: a user message rewinds to *before* it and hands its text
+		 * back to the editor; anything else rewinds to itself. Durable has no leaf, so
+		 * the session continues in a fork of the conversation at that point, and the
+		 * pointer written beside the session makes a restart resume there.
+		 */
+		navigateTree: async (targetId: string, options?: { readonly summarize?: boolean }) => {
+			// A branch summary is pi's; durable has none, so the request is refused
+			// rather than silently performed without one.
+			if (options?.summarize === true) return { cancelled: false, aborted: true };
+			const list = piEntries() as readonly {
+				readonly id?: unknown;
+				readonly parentId?: unknown;
+				readonly type?: string;
+				readonly message?: { readonly role?: string; readonly content?: unknown };
+			}[];
+			const target = list.find((entry) => String(entry.id) === String(targetId));
+			if (target === undefined) return { cancelled: true };
+			const isUser = target.type === "message" && target.message?.role === "user";
+			const at = isUser ? (target.parentId == null ? null : String(target.parentId)) : String(targetId);
+			await engine.rewind(at);
+			await refresh();
+			return {
+				cancelled: false,
+				...(isUser ? { editorText: textOfContent(target.message?.content) } : {}),
+			};
+		},
 		// The TUI hands its bindings (ui context, mode, handlers) to the session; the
 		// runner it later reads is ours, because the harness owns extension loading.
 		bindExtensions: async (bindings: unknown) => {

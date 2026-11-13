@@ -7,8 +7,8 @@
  * name never collide and two sessions in one directory never share a writer.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import pg from "pg";
 import type { HarnessConfig } from "./config.js";
 
@@ -76,6 +76,11 @@ async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<voi
 			PRIMARY KEY (tenant, cwd, session)
 		)`,
 	);
+	// A session may continue in a fork of its first conversation, after a rewind in
+	// the tree. The column arrived later, so it is added where it is missing.
+	await client.query(
+		`ALTER TABLE "${schema}".${CATALOG} ADD COLUMN IF NOT EXISTS conversation TEXT`,
+	);
 }
 
 /** A short-lived pool over the configured database. */
@@ -114,6 +119,60 @@ export async function stampSession(config: HarnessConfig, sessionId: string, at 
 			 VALUES ($1, $2, $3, $4)
 			 ON CONFLICT (tenant, cwd, session) DO UPDATE SET last_used = EXCLUDED.last_used`,
 			[config.tenant, config.cwd, sessionId, at],
+		);
+	});
+}
+
+/** Where a SQLite session records the conversation it continues in. */
+function pointerFile(config: HarnessConfig, sessionId: string): string {
+	return join(config.sessionDir, cwdSlug(config.cwd), `${sessionStem(config.tenant, sessionId)}.current.json`);
+}
+
+/**
+ * The conversation this session continues in, when a rewind moved it: a fork of the
+ * first conversation. Both backends keep the pointer beside the session, because a
+ * conversation is durable's business and this is the container's.
+ */
+export async function currentConversation(config: HarnessConfig, sessionId: string): Promise<string | undefined> {
+	if (config.pg === undefined) {
+		const raw = await readFile(pointerFile(config, sessionId), "utf8").catch(() => undefined);
+		if (raw === undefined) return undefined;
+		try {
+			const parsed = JSON.parse(raw) as { readonly conversation?: unknown };
+			return typeof parsed.conversation === "string" ? parsed.conversation : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	return await withPool(config, async (client) => {
+		await ensureCatalog(client, config.schema);
+		const result = await client.query<{ conversation: string | null }>(
+			`SELECT conversation FROM "${config.schema}".${CATALOG}
+			 WHERE tenant = $1 AND cwd = $2 AND session = $3`,
+			[config.tenant, config.cwd, sessionId],
+		);
+		return result.rows[0]?.conversation ?? undefined;
+	});
+}
+
+/** Record the conversation a session continues in; `undefined` returns it to the first. */
+export async function setCurrentConversation(config: HarnessConfig, sessionId: string, conversation: string | undefined): Promise<void> {
+	if (config.pg === undefined) {
+		const path = pointerFile(config, sessionId);
+		if (conversation === undefined) {
+			await rm(path, { force: true });
+			return;
+		}
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, `${JSON.stringify({ conversation })}\n`);
+		return;
+	}
+	await withPool(config, async (client) => {
+		await ensureCatalog(client, config.schema);
+		await client.query(
+			`UPDATE "${config.schema}".${CATALOG} SET conversation = $4
+			 WHERE tenant = $1 AND cwd = $2 AND session = $3`,
+			[config.tenant, config.cwd, sessionId, conversation ?? null],
 		);
 	});
 }

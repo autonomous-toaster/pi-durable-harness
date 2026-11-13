@@ -30,7 +30,7 @@ import {
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ScopedModel } from "@earendil-works/pi-coding-agent";
 import type { Pool } from "pg";
-import { sessionFile, sessionPrefix, stampSession } from "./session.js";
+import { currentConversation, sessionFile, sessionPrefix, setCurrentConversation, stampSession } from "./session.js";
 import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
@@ -190,6 +190,10 @@ export class HarnessEngine {
 	readonly #registry: import("@earendil-works/pi-durable").Registry;
 	/** Holder of the MCP servers the prompt's `mcp_servers` section describes. */
 	readonly #mcpServers: { servers: readonly ResolvedServer[] };
+	/** The conversation the session first created; a rewind forks it. */
+	readonly #rootId: string | undefined;
+	/** Where the session lives and what it is called, for the pointer beside it. */
+	readonly #identity: { readonly config: HarnessConfig; readonly key: string };
 	/** The thinking level last configured, so the synchronous getter can answer. */
 	#thinkingLevel: string | undefined;
 	/** The tools the conversation declares, captured at open (extension action reads). */
@@ -210,6 +214,8 @@ export class HarnessEngine {
 		resources: PromptResources;
 		registry: import("@earendil-works/pi-durable").Registry;
 		mcpServers?: { servers: readonly ResolvedServer[] };
+		rootId?: string;
+		identity: { readonly config: HarnessConfig; readonly key: string };
 		closeStorage: () => Promise<void>;
 		stamp?: () => Promise<void>;
 		modelScope?: readonly ScopedModel[];
@@ -220,6 +226,8 @@ export class HarnessEngine {
 		this.#modelRuntime = options.modelRuntime;
 		this.#resources = options.resources;
 		this.#mcpServers = options.mcpServers ?? { servers: [] };
+		this.#rootId = options.rootId;
+		this.#identity = options.identity;
 		this.#registry = options.registry;
 		this.#closeStorage = options.closeStorage;
 		this.#stamp = options.stamp;
@@ -295,8 +303,12 @@ export class HarnessEngine {
 				CONTEXT,
 			);
 			const agent = initialAgent(config, settingsManager, modelRuntime, options.resolvedModel, options.resolvedThinking);
-			const conversation = await harness.root(CONTEXT, { agent: { ...agent, tools: declared } });
+			const root = await harness.root(CONTEXT, { agent: { ...agent, tools: declared } });
 			harness.resume();
+			// A rewind leaves the session continuing in a fork; the pointer says which.
+			const recorded = await currentConversation(config, key).catch(() => undefined);
+			const resumed = recorded === undefined ? undefined : await harness.conversation(recorded as never, CONTEXT);
+			const conversation = resumed ?? root;
 			const opened2 = new HarnessEngine({
 				harness,
 				conversation,
@@ -308,6 +320,8 @@ export class HarnessEngine {
 				...(opened.stamp === undefined ? {} : { stamp: opened.stamp }),
 				...(options.modelScope === undefined ? {} : { modelScope: options.modelScope }),
 				mcpServers: servers,
+				rootId: String(root.id),
+				identity: { config, key },
 			});
 			opened2.#thinkingLevel = agent.thinkingLevel ?? undefined;
 			opened2.#declaredTools = declared.map((tool) => ({
@@ -589,9 +603,35 @@ export class HarnessEngine {
 			closeStorage: async () => {},
 			...(this.#stamp === undefined ? {} : { stamp: this.#stamp }),
 			modelScope: this.#modelScope,
+			identity: this.#identity,
 		});
 		forked.#thinkingLevel = this.#thinkingLevel;
 		return forked;
+	}
+
+	/**
+	 * Continue the session from `at`, or from an empty transcript when it is null.
+	 * Durable has no leaf to move, so the session moves into a fork of its first
+	 * conversation, and the pointer is what makes a restart resume there.
+	 */
+	async rewind(at: string | number | null): Promise<string> {
+		// Durable's entry ids are numbers; pi's are strings, so a caller may hand over
+		// either, and anything else is a bug worth naming rather than forking on NaN.
+		const entryId = at === null ? null : typeof at === "number" ? at : /^\d+$/.test(at) ? Number(at) : undefined;
+		if (entryId === undefined) throw new Error(`rewind needs an entry id, got ${JSON.stringify(at)}`);
+		const conversation =
+			entryId === null
+				? await this.#harness.createConversation({ ownership: { kind: "ownerless" } }, CONTEXT)
+				: await this.#conversation.fork(entryId as never, { ownership: { kind: "ownerless" } }, CONTEXT);
+		this.#conversation = conversation;
+		const id = String(conversation.id);
+		await setCurrentConversation(this.#identity.config, this.#identity.key, id).catch(() => {});
+		return id;
+	}
+
+	/** Return the session to its first conversation, dropping the pointer. */
+	async unrewwind(): Promise<void> {
+		await setCurrentConversation(this.#identity.config, this.#identity.key, undefined).catch(() => {});
 	}
 
 	async switchTo(id: string): Promise<boolean> {
