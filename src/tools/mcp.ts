@@ -7,7 +7,15 @@
 import { McpClient, StdioTransport, StreamableHttpTransport, type Tool as McpTool } from "@earendil-works/pi-mcp";
 import { obj, str } from "@earendil-works/pi-schema";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { loadMcpSettings, resolveToolExposure, type McpSettings, type RegisteredMcpServer, type ResolvedServer, type ToolExposure } from "./exposure.js";
+import {
+	loadMcpSettings,
+	resolveToolExposure,
+	type McpLoadOptions,
+	type McpSettings,
+	type RegisteredMcpServer,
+	type ResolvedServer,
+	type ToolExposure,
+} from "./exposure.js";
 
 function mapMcpContent(content: readonly unknown[]): unknown[] {
 	const blocks: unknown[] = [];
@@ -117,8 +125,9 @@ export async function loadMcpTools(
 	agentDir: string,
 	cwd: string,
 	registered: readonly RegisteredMcpServer[] = [],
+	options: McpLoadOptions = {},
 ): Promise<LoadedMcp> {
-	const settings = await loadMcpSettings(agentDir, cwd, registered);
+	const settings = await loadMcpSettings(agentDir, cwd, registered, options);
 	for (const warning of settings.warnings) process.stderr.write(`pi-durable: ${warning}\n`);
 	const clients = new Map<string, McpClient>();
 	const entries: McpToolEntry[] = [];

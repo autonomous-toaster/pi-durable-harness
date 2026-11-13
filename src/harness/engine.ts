@@ -330,6 +330,19 @@ export class HarnessEngine {
 		return this.#settingsManager;
 	}
 
+	/**
+	 * Replace the prompt resources after a `/reload`. The prompt extension closes over
+	 * the object it was built with and reads it when a request is prepared, so updating
+	 * its fields is what makes a new skill, prompt, or AGENTS.md reach the next request
+	 * without reopening the session.
+	 */
+	applyResources(next: Partial<PromptResources>): void {
+		for (const [key, value] of Object.entries(next)) {
+			if (value === undefined) continue;
+			(this.#resources as unknown as Record<string, unknown>)[key] = value;
+		}
+	}
+
 	/** The skills loaded once at startup, for command listing and expansion (tasks 2.1-2.4). */
 	get skills(): readonly Skill[] {
 		return this.#resources.skills;

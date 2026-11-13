@@ -145,13 +145,24 @@ export interface RegisteredMcpServer {
  * add the servers extensions registered (tasks 1.1, 1.2). An extension
  * registration shadows an `mcp.json` entry of the same name, and says so.
  */
+export interface McpLoadOptions {
+	/**
+	 * Whether the project may contribute servers. pi reads `<cwd>/.pi/mcp.json` only
+	 * for a trusted project, so an untrusted checkout cannot add a server that runs a
+	 * command on the user's behalf.
+	 */
+	readonly projectTrusted?: boolean;
+}
+
 export async function loadMcpSettings(
 	agentDir: string,
 	cwd: string,
 	registered: readonly RegisteredMcpServer[] = [],
+	options: McpLoadOptions = {},
 ): Promise<McpSettings> {
 	const global = (await readJson(join(agentDir, "mcp.json"))) ?? {};
-	const project = (await readJson(join(cwd, ".pi", "mcp.json"))) ?? {};
+	const project =
+		options.projectTrusted === false ? {} : ((await readJson(join(cwd, ".pi", "mcp.json"))) ?? {});
 	const warnings: string[] = [];
 	const merged = mergeMcpFiles(global, project);
 	if (registered.length > 0) {

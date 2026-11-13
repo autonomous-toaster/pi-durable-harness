@@ -3,7 +3,7 @@
 // same mcp.json and a mock model endpoint, capture both model requests, and
 // diff the declared tools and the system prompt.
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -62,7 +62,8 @@ function run(command, args, env, stdin) {
 
 const server = await startMockModel();
 const port = server.address().port;
-const cwd = await mkdtemp(join(tmpdir(), "harness-diff-"));
+// Real, not symlinked: a trust decision is keyed by the path pi resolves.
+const cwd = await realpath(await mkdtemp(join(tmpdir(), "harness-diff-")));
 await writeFile(
 	join(cwd, "mcp.json"),
 	JSON.stringify({
@@ -89,6 +90,39 @@ await writeFile(
 		},
 	}),
 );
+
+// The fixtures behind the other parity questions: an appended system prompt, project
+// instructions, a project skill, a project prompt template, and a project extension
+// that adds a tool. The agent dir is the temp directory, so the append file sits beside
+// the project resources pi discovers.
+await writeFile(join(cwd, "APPEND_SYSTEM.md"), "APPEND-FIXTURE: answer in lowercase.\n");
+await writeFile(join(cwd, "AGENTS.md"), "AGENTS-FIXTURE: prefer rg over grep.\n");
+// Project skills live under `.agents/skills`, discovered from the working directory
+// upwards; `.pi` holds configuration, not skills.
+await mkdir(join(cwd, ".agents", "skills", "demo"), { recursive: true });
+await writeFile(
+	join(cwd, ".agents", "skills", "demo", "SKILL.md"),
+	"---\nname: demo\ndescription: A fixture skill for the differential.\n---\n\nDEMO-SKILL body.\n",
+);
+await mkdir(join(cwd, ".pi", "prompts"), { recursive: true });
+await writeFile(join(cwd, ".pi", "prompts", "demo.md"), "DEMO-PROMPT for $ARGUMENTS\n");
+await mkdir(join(cwd, ".pi", "extensions"), { recursive: true });
+await writeFile(
+	join(cwd, ".pi", "extensions", "demo.ts"),
+	[
+		"export default function demo(pi) {",
+		"\tpi.registerTool({",
+		'\t\tname: "demo_tool",',
+		'\t\tdescription: "A fixture tool the differential compares.",',
+		'\t\tparameters: { type: "object", properties: {} },',
+		'\t\texecute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),',
+		"\t});",
+		"}",
+		"",
+	].join("\n"),
+);
+// Trust, so the project resources above load at all: a flat path-to-decision map.
+await writeFile(join(cwd, "trust.json"), JSON.stringify({ [cwd]: true }));
 
 const env = { PI_CODING_AGENT_DIR: cwd, PI_OFFLINE: "1" };
 const piRun = await run(
@@ -145,6 +179,18 @@ for (const tool of harnessTools) {
 	}
 	if (JSON.stringify(other.parameters) !== JSON.stringify(tool.parameters)) diffs.push(`${tool.name}: parameters differ`);
 }
+// A comparison proves nothing if the fixtures never loaded, so pi's own request must
+// carry them: the appended prompt, the project instructions, the skill, and the
+// extension's tool. If they are missing, pi ignored the fixtures and the run is void.
+const piSystem = systemText(piRequest);
+for (const marker of ["APPEND-FIXTURE", "AGENTS-FIXTURE", "DEMO-SKILL"]) {
+	if (!piSystem.includes(marker)) diffs.push(`pi's request lacks ${marker}: the fixture did not load`);
+}
+if (diffs.length > 0) process.stderr.write(`pi said on stderr:\n${piRun.stderr.slice(-800)}\n`);
+if (!(piRequest.tools ?? []).some((tool) => JSON.stringify(tool).includes("demo_tool"))) {
+	diffs.push("pi's request lacks demo_tool: the fixture extension did not load");
+}
+
 if (systemText(piRequest) !== systemText(harnessRequest)) {
 	diffs.push("system prompt differs");
 	await writeFile("/tmp/pi-system.txt", systemText(piRequest));

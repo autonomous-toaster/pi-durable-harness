@@ -35,6 +35,8 @@ export interface TuiAdapterOptions {
 	readonly modelRuntime: unknown;
 	readonly modelRegistry?: unknown;
 	readonly thinkingLevel: string;
+	/** Whether the project is trusted, asked again by `/reload`. */
+	readonly resolveProjectTrust?: () => boolean;
 	/** pi's loaded extensions: their renderers and commands are what the TUI draws. */
 	readonly extensions?: readonly Extension[];
 	/** Whether the session is written to storage; pi asks this to print a resume hint. */
@@ -93,6 +95,8 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	/** The session file pi prints and /session shows. */
 	const sessionFileOf = (): string | undefined => options.sessionFile;
 	let extensionRunner: unknown;
+	/** Extensions the loader found at the last reload, when it differs from startup. */
+	let freshExtensions: readonly Extension[] | undefined;
 	let extensionBindings: unknown;
 
 	/** The runner the TUI reads for commands, renderers, and overlays. */
@@ -373,12 +377,13 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 	/** pi's own runner, so extension rows, commands, and shortcuts are real (task 6.1). */
 	const runner = (): unknown => {
 		if (extensionRunner !== undefined) return extensionRunner;
-		if (options.extensions === undefined || options.extensions.length === 0) {
+		const extensions = freshExtensions ?? options.extensions;
+		if (extensions === undefined || extensions.length === 0) {
 			extensionRunner = createRenderingRunner();
 			return extensionRunner;
 		}
 		extensionRunner = new ExtensionRunner(
-			[...options.extensions],
+			[...extensions],
 			createExtensionRuntime(),
 			options.cwd,
 			sessionManager as never,
@@ -732,8 +737,30 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		abortBranchSummary: () => undefined,
 		abortRetry: () => undefined,
 		async reload() {
-			const loader = options.resourceLoader as { reload?: (options: unknown) => Promise<void> };
-			await loader.reload?.({ resolveProjectTrust: async () => false });
+			const loader = options.resourceLoader as {
+				reload?: (options: unknown) => Promise<void>;
+				getAgentsFiles?: () => { agentsFiles?: readonly unknown[] };
+				getSkills?: () => { skills?: readonly unknown[] };
+				getPrompts?: () => { prompts?: readonly unknown[] };
+				getSystemPrompt?: () => string | undefined;
+				getAppendSystemPrompt?: () => readonly string[];
+				getExtensions?: () => { extensions?: readonly unknown[] };
+			};
+			// pi re-reads everything the loader owns, with the project's trust as it stands.
+			await loader.reload?.({ resolveProjectTrust: async () => options.resolveProjectTrust?.() ?? true });
+			engine.applyResources({
+				...(loader.getAgentsFiles?.().agentsFiles === undefined ? {} : { agentsFiles: loader.getAgentsFiles?.().agentsFiles as never }),
+				...(loader.getSkills?.().skills === undefined ? {} : { skills: loader.getSkills?.().skills as never }),
+				...(loader.getPrompts?.().prompts === undefined ? {} : { prompts: loader.getPrompts?.().prompts as never }),
+				...(loader.getSystemPrompt?.() === undefined ? {} : { systemPrompt: loader.getSystemPrompt?.() }),
+				...(loader.getAppendSystemPrompt?.() === undefined ? {} : { appendSystemPrompt: loader.getAppendSystemPrompt?.() as never }),
+			});
+			// Extensions are rebuilt from what the loader found this time, not the startup list.
+			const refreshed = loader.getExtensions?.().extensions;
+			if (refreshed !== undefined) {
+				extensionRunner = undefined;
+				freshExtensions = refreshed as never;
+			}
 			await refresh();
 		},
 		async exportToHtml() {

@@ -172,7 +172,12 @@ export async function main(argv: readonly string[]): Promise<void> {
 	if (resolved.warning !== undefined) process.stderr.write(`pi-durable: ${resolved.warning}\n`);
 	const key = resolved.id;
 	const modelRuntime = await ModelRuntime.create();
-	const settingsManager = SettingsManager.create(config.cwd);
+	// The trust decision the loader and the TUI share. Without it the manager answers
+	// with pi's default (trusted) while the loader resolves the store (untrusted), so a
+	// TUI neither prompts nor loads what it claims to ignore.
+	const settingsManager = SettingsManager.create(config.cwd, config.agentDir, {
+		projectTrusted: projectTrusted(config.agentDir, config.cwd),
+	});
 
 	// `--models` and `--model` resolve through pi's own resolver, so fuzzy
 	// matching, `:thinking` suffixes, and provider ambiguity behave as in pi.
@@ -299,7 +304,10 @@ export async function main(argv: readonly string[]): Promise<void> {
 		config: server.config as RegisteredMcpServer["config"],
 		source: server.extensionPath,
 	}));
-	const mcp = await loadMcpTools(config.agentDir, config.cwd, registeredMcp);
+	// pi reads a project's mcp.json only for a trusted project.
+	const mcp = await loadMcpTools(config.agentDir, config.cwd, registeredMcp, {
+		projectTrusted: projectTrusted(config.agentDir, config.cwd),
+	});
 
 	const extraExtensions = mcp.tools.length === 0 ? [...translated] : [{ name: "harness.mcp", tools: mcp.tools }, ...translated];
 	// A session another process holds cannot be written; say so and stop rather than
@@ -398,6 +406,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 				modelRuntime,
 				modelRegistry: new ModelRegistry(modelRuntime),
 				thinkingLevel: config.thinking ?? "off",
+				resolveProjectTrust: () => projectTrusted(config.agentDir, config.cwd),
 				persisted: !config.ephemeral,
 				defaultSessionDir: config.defaultSessionDir,
 				extensions: loaded.extensions,
