@@ -74,12 +74,16 @@ export function renderMcpServers(servers: readonly ResolvedServer[]): string | u
 const SECTION_KEYS = ["preamble", "tools", "rules", "docs", "addendum", "project_context", "skills", "cwd", "mcp_servers"] as const;
 
 /** Build the prompt extension from resources loaded once at startup (tasks 5.2-5.4). */
-export function createPromptExtension(resources: PromptResources, servers: readonly ResolvedServer[] = []) {
+export function createPromptExtension(
+	resources: PromptResources,
+	/** Read when a request is prepared, so a `/reload` can replace the servers. */
+	serversOf: () => readonly ResolvedServer[] = () => [],
+) {
 	const toolSnippets = Object.fromEntries(Object.entries(TOOL_CONTRIBUTIONS).map(([name, c]) => [name, c.snippet]));
 	const toolGuidelines = Object.fromEntries(Object.entries(TOOL_CONTRIBUTIONS).map(([name, c]) => [name, [...c.guidelines]]));
-	const mcpServers = renderMcpServers(servers);
-	const sectionsFor = (input: PromptInput<ToolRegistration>): SystemPromptSections =>
-		buildSystemPromptSections({
+	const sectionsFor = (input: PromptInput<ToolRegistration>): SystemPromptSections => {
+		const mcpServers = renderMcpServers(serversOf());
+		return buildSystemPromptSections({
 			...(resources.systemPrompt === undefined ? {} : { customPrompt: resources.systemPrompt }),
 			selectedTools: input.agent.tools.map((tool) => tool.name),
 			toolSnippets,
@@ -90,6 +94,7 @@ export function createPromptExtension(resources: PromptResources, servers: reado
 			contextFiles: resources.agentsFiles,
 			skills: [...resources.skills],
 		});
+	};
 	return defineExtension({
 		name: "harness.prompt",
 		sections: SECTION_KEYS.map((key) => section(key, (input) => sectionsFor(input)[key], { tag: false })),

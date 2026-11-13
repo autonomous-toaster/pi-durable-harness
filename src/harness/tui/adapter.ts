@@ -37,6 +37,8 @@ export interface TuiAdapterOptions {
 	readonly thinkingLevel: string;
 	/** Whether the project is trusted, asked again by `/reload`. */
 	readonly resolveProjectTrust?: () => boolean;
+	/** Re-read MCP servers, so `/reload` sees a server added or removed. */
+	readonly reloadMcp?: () => Promise<void>;
 	/** pi's loaded extensions: their renderers and commands are what the TUI draws. */
 	readonly extensions?: readonly Extension[];
 	/** Whether the session is written to storage; pi asks this to print a resume hint. */
@@ -748,6 +750,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			};
 			// pi re-reads everything the loader owns, with the project's trust as it stands.
 			await loader.reload?.({ resolveProjectTrust: async () => options.resolveProjectTrust?.() ?? true });
+			await options.reloadMcp?.();
 			engine.applyResources({
 				...(loader.getAgentsFiles?.().agentsFiles === undefined ? {} : { agentsFiles: loader.getAgentsFiles?.().agentsFiles as never }),
 				...(loader.getSkills?.().skills === undefined ? {} : { skills: loader.getSkills?.().skills as never }),

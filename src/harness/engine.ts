@@ -46,7 +46,7 @@ export type PiSessionEvent =
 export type PiSessionHandler = (event: PiSessionEvent) => unknown;
 import { FileTools, CodemodeTools, PiCodingTools, platformShellTools } from "../tools/index.js";
 import { configureCodemodeDescription } from "../tools/codemode.js";
-import { type McpSettings } from "../tools/exposure.js";
+import { type McpSettings, type ResolvedServer } from "../tools/exposure.js";
 import type { McpToolEntry } from "../tools/mcp.js";
 import { setDeclaredTools, setMcpEntries, exposureOf, isMcpTool } from "../tools/state.js";
 import { isCallable } from "../tools/exposure.js";
@@ -188,6 +188,8 @@ export class HarnessEngine {
 	readonly #modelScope: readonly ScopedModel[];
 	readonly #resources: PromptResources;
 	readonly #registry: import("@earendil-works/pi-durable").Registry;
+	/** Holder of the MCP servers the prompt's `mcp_servers` section describes. */
+	readonly #mcpServers: { servers: readonly ResolvedServer[] };
 	/** The thinking level last configured, so the synchronous getter can answer. */
 	#thinkingLevel: string | undefined;
 	/** The tools the conversation declares, captured at open (extension action reads). */
@@ -207,6 +209,7 @@ export class HarnessEngine {
 		modelRuntime: ModelRuntime;
 		resources: PromptResources;
 		registry: import("@earendil-works/pi-durable").Registry;
+		mcpServers?: { servers: readonly ResolvedServer[] };
 		closeStorage: () => Promise<void>;
 		stamp?: () => Promise<void>;
 		modelScope?: readonly ScopedModel[];
@@ -216,6 +219,7 @@ export class HarnessEngine {
 		this.#settingsManager = options.settingsManager;
 		this.#modelRuntime = options.modelRuntime;
 		this.#resources = options.resources;
+		this.#mcpServers = options.mcpServers ?? { servers: [] };
 		this.#registry = options.registry;
 		this.#closeStorage = options.closeStorage;
 		this.#stamp = options.stamp;
@@ -232,7 +236,10 @@ export class HarnessEngine {
 			registry.install(FileTools);
 			registry.install(platformShellTools());
 			registry.install(CodemodeTools);
-			registry.install(createPromptExtension(resources, options.mcp?.settings.servers ?? []));
+			// The prompt extension is built before the engine exists, so it reads the
+			// servers through this holder, which a reload can replace.
+			const servers: { servers: readonly ResolvedServer[] } = { servers: options.mcp?.settings.servers ?? [] };
+			registry.install(createPromptExtension(resources, () => servers.servers));
 			for (const extension of options.extraExtensions ?? []) registry.install(extension);
 
 			// Exposure table (task 1.3); the composed codemode description needs the callable set, applied below.
@@ -300,6 +307,7 @@ export class HarnessEngine {
 				closeStorage: opened.close,
 				...(opened.stamp === undefined ? {} : { stamp: opened.stamp }),
 				...(options.modelScope === undefined ? {} : { modelScope: options.modelScope }),
+				mcpServers: servers,
 			});
 			opened2.#thinkingLevel = agent.thinkingLevel ?? undefined;
 			opened2.#declaredTools = declared.map((tool) => ({
@@ -341,6 +349,32 @@ export class HarnessEngine {
 			if (value === undefined) continue;
 			(this.#resources as unknown as Record<string, unknown>)[key] = value;
 		}
+	}
+
+	/** Every installed tool, for a reload that has to recompute what to declare. */
+	toolRegistrations(): readonly import("@earendil-works/pi-durable").ToolRegistration[] {
+		return (this.#registry.snapshot().tools() as readonly { readonly tool: import("@earendil-works/pi-durable").ToolRegistration }[]).map(
+			(entry) => entry.tool,
+		);
+	}
+
+	/**
+	 * Replace the MCP servers and the tools after a `/reload`: the prompt's
+	 * `mcp_servers` section reads the holder, and the conversation takes the new tool
+	 * set, so a server added or removed is visible to the next request.
+	 */
+	async applyMcp(
+		servers: readonly ResolvedServer[],
+		mcpTools: readonly import("@earendil-works/pi-durable").ToolRegistration[],
+		tools: readonly import("@earendil-works/pi-durable").ToolRegistration[],
+	): Promise<void> {
+		this.#mcpServers.servers = servers;
+		// `install` replaces an installed extension of the same name in place, so the
+		// registry — which the codemode sandbox and the declared set both read — learns
+		// about a server added or removed since startup.
+		this.#registry.install({ name: "harness.mcp", tools: [...mcpTools] } as never);
+		this.#declaredTools = tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+		await this.configure({ tools } as never);
 	}
 
 	/** The skills loaded once at startup, for command listing and expansion (tasks 2.1-2.4). */

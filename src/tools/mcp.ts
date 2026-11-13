@@ -88,11 +88,31 @@ export interface LoadedMcp {
 	close(): Promise<void>;
 }
 
+/**
+ * How long a server may take to answer the handshake. A command that never speaks MCP
+ * would otherwise hold startup — and now `/reload` — open forever; a timeout turns it
+ * into the warning the loop already prints.
+ */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+async function withTimeout<T>(work: Promise<T>, name: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(new Error(`no answer within ${CONNECT_TIMEOUT_MS / 1000}s`)), CONNECT_TIMEOUT_MS);
+	});
+	try {
+		return await Promise.race([work, timeout]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+		void name;
+	}
+}
+
 async function connect(server: ResolvedServer, cwd: string): Promise<McpClient> {
 	const config = server.transport ?? {};
 	const client = new McpClient({ name: "pi-durable", version: "0.0.0" });
 	if (config.command !== undefined) {
-		await client.connect(
+		await withTimeout(client.connect(
 			new StdioTransport({
 				command: config.command,
 				...(config.args === undefined ? {} : { args: config.args }),
@@ -100,14 +120,14 @@ async function connect(server: ResolvedServer, cwd: string): Promise<McpClient> 
 				inheritEnv: true,
 				...(config.env === undefined ? {} : { env: config.env }),
 			}),
-		);
+		), server.name);
 	} else if (config.url !== undefined) {
-		await client.connect(
+		await withTimeout(client.connect(
 			new StreamableHttpTransport({
 				url: config.url,
 				...(config.headers === undefined ? {} : { headers: config.headers }),
 			}),
-		);
+		), server.name);
 	}
 	return client;
 }

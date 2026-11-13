@@ -7,10 +7,12 @@ import {
 	ModelRegistry,
 	ModelRuntime,
 	resolveCliModel,
+	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
 	resolveModelScopeWithDiagnostics,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { dirname } from "node:path";
 import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
 import { copySession } from "./harness/fork.js";
@@ -39,6 +41,8 @@ import {
 import { RpcServer } from "./rpc/server.js";
 import { HarnessSession } from "./rpc/session.js";
 import { loadMcpTools } from "./tools/mcp.js";
+import { computeActivation, computeDeclaredTools } from "./tools/activate.js";
+import { setMcpEntries } from "./tools/state.js";
 import type { RegisteredMcpServer } from "./tools/exposure.js";
 
 const USAGE = `pi-durable — pi-RPC-compatible harness backed by Pi Durable
@@ -112,6 +116,7 @@ async function reloadResources(
 	config: HarnessConfig,
 	settingsManager: SettingsManager,
 	discovered: DiscoveredResources,
+	trusted: boolean,
 ): Promise<DefaultResourceLoader> {
 	const loader = new DefaultResourceLoader({
 		cwd: config.cwd,
@@ -121,21 +126,86 @@ async function reloadResources(
 		additionalSkillPaths: [...config.skillPaths, ...discovered.skillPaths],
 		additionalPromptTemplatePaths: [...config.promptTemplatePaths, ...discovered.promptPaths],
 	});
-	await loader.reload({ resolveProjectTrust: async () => projectTrusted(config.agentDir, config.cwd) });
+	// The answer, not the manager: `reload` flips the manager to untrusted for its
+	// bootstrap pass, so asking it back would report the value it just forced.
+	await loader.reload({ resolveProjectTrust: async () => trusted });
 	return loader;
 }
 
 /**
- * Whether a project is trusted, as pi decides it: through the trust store, which
- * inherits a decision from a parent folder. `settingsManager.isProjectTrusted()`
- * alone is the raw flag and would ignore an inherited decision, so an untrusted
- * report would hide project prompts and skills pi loads.
+ * Whether a project is trusted, decided the way pi decides it:
+ *
+ *  - a project with nothing to trust is trusted, whatever the store says;
+ *  - otherwise a saved decision, which may be inherited from a parent folder, wins;
+ *  - otherwise `defaultProjectTrust` decides: `always`, `never`, or `ask` — and asking
+ *    is only possible with a terminal, where the answer is saved like pi saves it.
+ *
+ * `settingsManager.isProjectTrusted()` is the raw flag and ignores all of that, so it
+ * is never the source here.
  */
-function projectTrusted(agentDir: string, cwd: string): boolean {
+async function resolveProjectTrust(
+	agentDir: string,
+	cwd: string,
+	settingsManager: SettingsManager,
+): Promise<boolean> {
+	const store = new ProjectTrustStore(agentDir);
+	let saved: boolean | null = null;
 	try {
-		return new ProjectTrustStore(agentDir).get(cwd) === true;
+		saved = store.get(cwd);
 	} catch {
-		return false;
+		saved = null;
+	}
+	if (!hasTrustRequiringProjectResources(cwd)) return saved ?? true;
+	if (saved !== null) return saved;
+	switch (settingsManager.getDefaultProjectTrust()) {
+		case "always":
+			return true;
+		case "never":
+			return false;
+		default:
+			break;
+	}
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) return false;
+	const answer = await askProjectTrust(cwd);
+	if (answer === undefined) return false;
+	store.setMany(answer.updates);
+	return answer.trusted;
+}
+
+/** pi's three answers, asked on the terminal before the session starts. */
+async function askProjectTrust(
+	cwd: string,
+): Promise<{ readonly trusted: boolean; readonly updates: { readonly path: string; readonly decision: boolean | null }[] } | undefined> {
+	const parent = dirname(cwd);
+	const options = [
+		{ label: "Trust", trusted: true, updates: [{ path: cwd, decision: true as boolean | null }] },
+		...(parent === cwd
+			? []
+			: [
+					{
+						label: `Trust parent folder (${parent})`,
+						trusted: true,
+						updates: [
+							{ path: parent, decision: true as boolean | null },
+							{ path: cwd, decision: null },
+						],
+					},
+				]),
+		{ label: "Do not trust", trusted: false, updates: [{ path: cwd, decision: false as boolean | null }] },
+	];
+	process.stderr.write(`\nProject trust: ${cwd}\n`);
+	options.forEach((option, index) => process.stderr.write(`  ${index + 1}. ${option.label}\n`));
+	process.stderr.write("Which one? [1] ");
+	const { createInterface } = await import("node:readline/promises");
+	const readline = createInterface({ input: process.stdin, output: process.stderr });
+	try {
+		const line = (await readline.question("")).trim();
+		const index = line === "" ? 0 : Number(line) - 1;
+		return options[index];
+	} catch {
+		return undefined;
+	} finally {
+		readline.close();
 	}
 }
 
@@ -175,9 +245,11 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// The trust decision the loader and the TUI share. Without it the manager answers
 	// with pi's default (trusted) while the loader resolves the store (untrusted), so a
 	// TUI neither prompts nor loads what it claims to ignore.
-	const settingsManager = SettingsManager.create(config.cwd, config.agentDir, {
-		projectTrusted: projectTrusted(config.agentDir, config.cwd),
-	});
+	// pi resolves trust before anything loads: the store, the default, or the answer to
+	// a prompt. The answer is what the loader, the manager, MCP and the TUI all use.
+	const settingsManager = SettingsManager.create(config.cwd, config.agentDir);
+	const trusted = await resolveProjectTrust(config.agentDir, config.cwd, settingsManager);
+	settingsManager.setProjectTrusted(trusted);
 
 	// `--models` and `--model` resolve through pi's own resolver, so fuzzy
 	// matching, `:thinking` suffixes, and provider ambiguity behave as in pi.
@@ -235,7 +307,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 		additionalSkillPaths: [...config.skillPaths],
 		additionalPromptTemplatePaths: [...config.promptTemplatePaths],
 	});
-	await loader.reload({ resolveProjectTrust: async () => projectTrusted(config.agentDir, config.cwd) });
+	await loader.reload({ resolveProjectTrust: async () => trusted });
 
 	// pi extensions: translate what the loader recorded, report the rest (tasks 3.1-3.11).
 	const loaded = loader.getExtensions();
@@ -271,7 +343,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 	const resourceLoader =
 		discovered.skillPaths.length === 0 && discovered.promptPaths.length === 0
 			? loader
-			: await reloadResources(config, settingsManager, discovered);
+			: await reloadResources(config, settingsManager, discovered, trusted);
 	/**
 	 * The TUI shows the loaded extensions in its startup panels, but the loader it is
 	 * given has them switched off when an extension contributed resource paths. This
@@ -306,10 +378,27 @@ export async function main(argv: readonly string[]): Promise<void> {
 	}));
 	// pi reads a project's mcp.json only for a trusted project.
 	const mcp = await loadMcpTools(config.agentDir, config.cwd, registeredMcp, {
-		projectTrusted: projectTrusted(config.agentDir, config.cwd),
+		projectTrusted: trusted,
 	});
 
-	const extraExtensions = mcp.tools.length === 0 ? [...translated] : [{ name: "harness.mcp", tools: mcp.tools }, ...translated];
+	const defaultTools = (settingsManager.getSettings().defaultTools ?? []) as readonly string[];
+	const codemodeMode = (): "on" | "only" =>
+		((settingsManager.getSettings() as { codemode?: { mode?: string } }).codemode?.mode ?? "on") as "on" | "only";
+	let currentMcp = mcp;
+	let extraExtensions = currentMcp.tools.length === 0 ? [...translated] : [{ name: "harness.mcp", tools: currentMcp.tools }, ...translated];
+	/**
+	 * `/reload` re-reads the MCP configuration: a server added or removed takes effect
+	 * then, without a new session. The prompt's `mcp_servers` section and the declared
+	 * tool set both follow.
+	 */
+	const reloadMcp = async (): Promise<void> => {
+		await currentMcp.close().catch(() => {});
+		currentMcp = await loadMcpTools(config.agentDir, config.cwd, registeredMcp, { projectTrusted: trusted });
+		setMcpEntries(currentMcp.entries);
+		const activation = computeActivation(currentMcp.settings.servers, currentMcp.settings.autoEnableCodemode ?? true, defaultTools, codemodeMode());
+		const declared = computeDeclaredTools(engine.toolRegistrations(), activation, defaultTools, codemodeMode());
+		await engine.applyMcp(currentMcp.settings.servers, currentMcp.tools, declared);
+	};
 	// A session another process holds cannot be written; say so and stop rather than
 	// hang on a pool that outlived the failure.
 	let opened: HarnessEngine;
@@ -406,7 +495,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 				modelRuntime,
 				modelRegistry: new ModelRegistry(modelRuntime),
 				thinkingLevel: config.thinking ?? "off",
-				resolveProjectTrust: () => projectTrusted(config.agentDir, config.cwd),
+				resolveProjectTrust: () => trusted,
+				reloadMcp,
 				persisted: !config.ephemeral,
 				defaultSessionDir: config.defaultSessionDir,
 				extensions: loaded.extensions,
