@@ -37,9 +37,14 @@ await build({
 	target: "node22",
 	outfile: main,
 	alias: { "@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js": codemodeTool },
-	// SEA's main is CommonJS and has no module URL, but pi's composer computes one
-	// at load. Define it so the module initialises; nothing in a SEA reads it.
-	define: { "import.meta.url": JSON.stringify(pathToFileURL(codemodeTool).href) },
+	// SEA's main is CommonJS and has no module URL, but pi computes one at load
+	// (`fileURLToPath(import.meta.url)`) and resolves a sibling from it when it runs
+	// an image resize. Every module in a bundle shares one URL, so it is pinned to
+	// the directory of that sibling (`dist/utils/image-resize-worker.js`); the paths
+	// pi derives from it are otherwise package-relative, which still walk up to the
+	// package root. OAuth flows are not resolved this way -- they are registered
+	// statically at startup (see `registerBunOAuthFlows` in `src/index.ts`).
+	define: { "import.meta.url": JSON.stringify(pathToFileURL(join(root, "node_modules/@earendil-works/pi-coding-agent/dist/utils/image-resize.js")).href) },
 	// The codemode sandbox needs the QuickJS wasm; a SEA blob carries no
 	// node_modules, so the bundle inlines it.
 	loader: { ".wasm": "binary" },
