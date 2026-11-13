@@ -115,7 +115,7 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 		// pool opens is already scoped, not only the one the database grabs.
 		// The session GUC scopes the policy; the role is assumed by the setup statements,
 		// which must run as the connecting user to be allowed to create it.
-		const scope = config.pgLayout === "shared" ? { options: `-c app.session=${sessionPrefix(config.tenant, key)}` } : {};
+		const scope = { options: `-c app.session=${sessionPrefix(config.tenant, key)}` };
 		const pool: Pool = new pg.Pool({ connectionString, ...(ssl === undefined ? {} : { ssl }), ...scope });
 		if (enforce) {
 			const probe = await pool.connect().catch(async (error: unknown) => {
@@ -135,8 +135,6 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			pool,
 			schema: config.schema,
 			prefix: sessionPrefix(config.tenant, key),
-			layout: config.pgLayout,
-			...(config.takeOver ? { takeOver: true } : {}),
 		}).catch(async (error: unknown) => {
 			// The pool would keep the process alive after the failure is reported.
 			await pool.end().catch(() => {});

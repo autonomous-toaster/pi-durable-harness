@@ -81,7 +81,6 @@ Prompt:
 Other:
   -h, --help            this text
   --offline             no network activity
-  --take-over           continue even though another process holds the session
 
 Accepted for pi compatibility and not acted on:
   --export, --theme
@@ -89,7 +88,6 @@ Accepted for pi compatibility and not acted on:
 Environment:
   PI_DURABLE_DATABASE_URL        PostgreSQL URL; unset stores in SQLite
   PI_DURABLE_PG_SCHEMA           schema for PostgreSQL sessions (default: durable)
-  PI_DURABLE_PG_LAYOUT           shared (default) or prefixed (one table set per session)
   PI_DURABLE_PG_SSL              disable, require, verify-ca, or verify-full
   PI_DURABLE_PG_SSL_CA           CA certificate in PEM, needed by verify-ca and verify-full
   PI_DURABLE_PG_SSL_CERT         client certificate in PEM, with PI_DURABLE_PG_SSL_KEY
@@ -326,9 +324,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 			process.stderr.write(
 				[
 					`pi-durable-harness: ${held} is open in another process, so this one cannot write to it.`,
-					"  Continue somewhere else:  node dist/cli.js            (a new session)",
-					"  Or name one:              node dist/cli.js --session-id <id>",
-					"  Or, if that process is gone and its connection lingers: --take-over",
+					"  Continue in a new session:      node dist/cli.js",
+					"  Continue in a fork of it:       node dist/cli.js --fork <session-id>",
+					"  Or name another session:        node dist/cli.js --session-id <id>",
 					"",
 				].join("\n"),
 			);

@@ -12,7 +12,7 @@ import pg from "pg";
 import type { Pool, PoolClient } from "pg";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import { translateStatement } from "./ddl.js";
-import { applyLayout, scopeRoleSetup, type Layout, type TranslationContext } from "./layout.js";
+import { applyLayout, scopeRoleSetup, type TranslationContext } from "./layout.js";
 
 let typesConfigured = false;
 
@@ -152,14 +152,14 @@ export class PostgresDatabase implements SqliteDatabase {
 	}
 
 	/** Acquire one connection, create the session schema, and target it. */
-	static async open(pool: Pool, schema: string, options?: { readonly prefix: string; readonly layout: Layout }): Promise<PostgresDatabase> {
+	static async open(pool: Pool, schema: string, options?: { readonly prefix: string }): Promise<PostgresDatabase> {
 		const client = await pool.connect();
 		try {
 			await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(schema)}`);
 			await client.query(`SET search_path TO ${quoteIdent(schema)}`);
 			// The policy reads this; set here as well, so a pool without the startup
 			// option still scopes its rows instead of writing them with a NULL session.
-			if (options !== undefined && options.layout === "shared") {
+			if (options !== undefined) {
 				// The role must be assumed before anything is written, and the policy reads
 				// the GUC this sets.
 				for (const statement of scopeRoleSetup(schema)) await client.query(statement);
@@ -169,7 +169,7 @@ export class PostgresDatabase implements SqliteDatabase {
 			client.release();
 			throw error;
 		}
-		return new PostgresDatabase(client, options === undefined ? undefined : { prefix: options.prefix, layout: options.layout });
+		return new PostgresDatabase(client, options === undefined ? undefined : { prefix: options.prefix });
 	}
 
 	#enqueue<T>(operation: () => Promise<T>): Promise<T> {

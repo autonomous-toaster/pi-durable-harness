@@ -65,7 +65,7 @@ export function sessionFile(config: HarnessConfig, sessionId: string): string {
 	return join(config.sessionDir, cwdSlug(config.cwd), `${sessionStem(config.tenant, sessionId)}.sqlite`);
 }
 
-/** Create the catalog table once; it shares the schema with prefixed storage tables. */
+/** Create the catalog table once; it shares the schema with the session tables. */
 async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<void> {
 	await client.query(
 		`CREATE TABLE IF NOT EXISTS "${schema}".${CATALOG} (

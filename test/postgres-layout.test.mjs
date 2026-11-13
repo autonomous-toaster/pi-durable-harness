@@ -4,7 +4,7 @@ import { applyLayout, policies, scopeIndex, scopeRoleSetup, scopeTable, stripPre
 
 // Durable's prefix carries its own trailing underscore; names are `<prefix><table>`.
 const prefix = "s_1a2b3c4d5e6f_";
-const shared = { prefix, layout: "shared" };
+const shared = { prefix };
 
 test("the prefix is dropped from a table name", () => {
 	assert.equal(stripPrefix(prefix, "SELECT * FROM s_1a2b3c4d5e6f_entries"), "SELECT * FROM entries");
@@ -56,14 +56,11 @@ test("the scope role is created, granted, and assumed", () => {
 	assert.equal(setup.at(-1), "SET ROLE durable_scope");
 });
 
-test("the prefixed layout leaves every statement alone", async () => {
-	const sql = "CREATE TABLE s_1a2b3c4d5e6f_entries ( id BIGINT PRIMARY KEY )";
-	assert.deepEqual(await applyLayout(sql, { prefix, layout: "prefixed" }), { sql, after: [] });
-});
-
-test("a held session is refused, and --take-over is the only way past it", async () => {
-	const { resolveConfig } = await import("../dist/harness/config.js");
-	assert.equal(resolveConfig([], {}, "/w").takeOver, false);
-	assert.equal(resolveConfig(["--take-over"], {}, "/w").takeOver, true);
-	assert.equal(resolveConfig([], { PI_DURABLE_PG_TAKE_OVER: "1" }, "/w").takeOver, true);
+test("the storage layer takes no option to bypass the writer lock", async () => {
+	const { readFileSync } = await import("node:fs");
+	// One writer per storage is durable's rule, so no flag, option, or env var may
+	// offer to break it. Checked at the source, since the flag is simply gone.
+	const storage = readFileSync(new URL("../src/storage/postgres/storage.ts", import.meta.url), "utf8");
+	assert.doesNotMatch(storage, /takeOver/);
+	assert.match(storage, /throw new SessionLockedError/);
 });

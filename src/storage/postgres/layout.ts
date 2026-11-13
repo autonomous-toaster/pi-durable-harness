@@ -1,17 +1,15 @@
 /**
- * How the PostgreSQL backend lays its tables out.
+ * The PostgreSQL backend's table layout.
  *
- * `prefixed` gives each session its own table set (`<prefix>_entries`, …), which is
- * simple and catastrophic at scale: nine tables per session, so a thousand sessions
- * mean nine thousand tables, and every one is a catalog entry, a lock target, and a
- * migration that must run again.
- *
- * `shared` keeps one table set for the whole schema and puts the session in a
- * `session` column. A row-level-security policy, scoped to a GUC the pool sets on
- * connect, does the filtering the prefix used to do, so the statements the storage
- * core issues need no session predicate — only their table names lose the prefix.
+ * The portable core names its tables after its prefix, one set per session. On a
+ * server that means nine tables per session — a thousand sessions, nine thousand
+ * tables, each a catalog entry, a lock target, and a migration that runs again. The
+ * backend therefore keeps one table set for the whole schema and puts the session in
+ * a `session` column, which is what PostgreSQL offers for exactly this: a
+ * row-level-security policy, scoped to a GUC the pool sets on connect, does the
+ * filtering the prefix used to do. The statements the core issues need no session
+ * predicate; only their table names lose the prefix.
  */
-export type Layout = "shared" | "prefixed";
 
 /** The policy name used on every table; per table, so one name is enough. */
 const POLICY = "session_scope";
@@ -115,12 +113,10 @@ export function policies(table: string): string[] {
 
 export interface TranslationContext {
 	readonly prefix: string;
-	readonly layout: Layout;
 }
 
-/** Apply the shared layout to a translated statement; a prefixed one is left alone. */
+/** Apply the backend's layout to a translated statement. */
 export async function applyLayout(sql: string, context: TranslationContext): Promise<{ readonly sql: string; readonly after: readonly string[] }> {
-	if (context.layout === "prefixed") return { sql, after: [] };
 	const stripped = stripPrefix(context.prefix, sql);
 	const table = parseCreateTable(stripped);
 	if (table !== undefined) {
