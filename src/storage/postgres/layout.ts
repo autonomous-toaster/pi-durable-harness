@@ -111,6 +111,87 @@ export function policies(table: string): string[] {
 	];
 }
 
+/**
+ * The references the portable core cannot declare. Its tables are flat by design:
+ * a column carries an id and nothing enforces that the row exists. On a server the
+ * backend can say so, which is what these are — added once per table, after the
+ * table exists, and checked at commit rather than at each write, because the core
+ * writes a conversation before the task that owns it.
+ */
+interface ForeignKey {
+	/** The constraint's name, and how it is found again. */
+	readonly name: string;
+	/** The table that carries it. */
+	readonly table: string;
+	/** The referencing column. */
+	readonly column: string;
+	/** The table it points at. */
+	readonly parent: string;
+	/** Whether the owning row takes the child with it. */
+	readonly cascade?: boolean;
+}
+
+const FOREIGN_KEYS: readonly ForeignKey[] = [
+	{ name: "entries_conversation_fk", table: "entries", column: "conversation_id", parent: "conversations" },
+	{ name: "tasks_conversation_fk", table: "tasks", column: "conversation_id", parent: "conversations" },
+	{ name: "submissions_conversation_fk", table: "submissions", column: "conversation_id", parent: "conversations" },
+	{ name: "conversations_owner_conversation_fk", table: "conversations", column: "owner_conversation_id", parent: "conversations" },
+	// A conversation may name the task that owns it, and that task belongs to a
+	// conversation: deferred, so the order the core writes them in does not matter.
+	{ name: "conversations_owner_task_fk", table: "conversations", column: "owner_task_id", parent: "tasks" },
+	{ name: "document_revisions_document_fk", table: "document_revisions", column: "document_id", parent: "documents", cascade: true },
+];
+
+/** Whether both ends of a reference exist, as a guard any of these statements uses. */
+function bothExist(key: ForeignKey): string {
+	return `to_regclass('${key.table}') IS NOT NULL AND to_regclass('${key.parent}') IS NOT NULL`;
+}
+
+/**
+ * The statements that add every reference. Each is a DO block, because PostgreSQL has
+ * no `ADD CONSTRAINT IF NOT EXISTS` and a parent may not exist yet.
+ *
+ * They run after the migrations, not with each `CREATE TABLE`: durable rebuilds a
+ * table by creating `<table>_v2`, dropping the old one, and renaming — version 2 does
+ * that for `tasks`. A reference added at creation time would refuse that drop.
+ */
+export function addForeignKeys(): string[] {
+	return FOREIGN_KEYS.map((key) => {
+		// Clause order matters: ON DELETE comes before the deferrability clause.
+		const add = [
+			`ALTER TABLE ${key.table} ADD CONSTRAINT ${key.name}`,
+			`FOREIGN KEY (session, ${key.column}) REFERENCES ${key.parent} (session, id)`,
+			key.cascade === true ? "ON DELETE CASCADE" : "",
+			`DEFERRABLE INITIALLY DEFERRED`,
+		]
+			.filter(Boolean)
+			.join(" ");
+		return [
+			"DO $$ BEGIN",
+			`IF ${bothExist(key)}`,
+			`AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${key.name}' AND conrelid = to_regclass('${key.table}')) THEN`,
+			`${add};`,
+			"END IF; END $$",
+		].join(" ");
+	});
+}
+
+/**
+ * The statements that take those references away again, before a migration runs. A
+ * migration that rebuilds a table it references would otherwise fail on the drop.
+ */
+export function dropForeignKeys(): string[] {
+	return FOREIGN_KEYS.map((key) =>
+		[
+			"DO $$ BEGIN",
+			`IF to_regclass('${key.table}') IS NOT NULL`,
+			`AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${key.name}' AND conrelid = to_regclass('${key.table}')) THEN`,
+			`ALTER TABLE ${key.table} DROP CONSTRAINT ${key.name};`,
+			"END IF; END $$",
+		].join(" "),
+	);
+}
+
 export interface TranslationContext {
 	readonly prefix: string;
 }

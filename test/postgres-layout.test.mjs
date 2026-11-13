@@ -64,3 +64,18 @@ test("the storage layer takes no option to bypass the writer lock", async () => 
 	assert.doesNotMatch(storage, /takeOver/);
 	assert.match(storage, /throw new SessionLockedError/);
 });
+
+test("the backend declares the references the portable core cannot", async () => {
+	const { addForeignKeys, dropForeignKeys } = await import("../dist/storage/postgres/layout.js");
+	const added = addForeignKeys();
+	assert.equal(added.length, 6);
+	// Every one is deferred: durable writes a conversation before the task that owns it,
+	// and rebuilds tables by dropping them, so checks belong at commit.
+	for (const sql of added) assert.match(sql, /DEFERRABLE INITIALLY DEFERRED/);
+	assert.ok(added.some((sql) => /entries_conversation_fk/.test(sql) && /\(session, conversation_id\) REFERENCES conversations \(session, id\)/.test(sql)));
+	// The one child that is replaced wholesale carries its document with it.
+	assert.ok(added.some((sql) => /document_revisions_document_fk/.test(sql) && /ON DELETE CASCADE/.test(sql)));
+	// They are removed before a migration, since version 2 drops and renames tasks.
+	assert.equal(dropForeignKeys().length, 6);
+	for (const sql of dropForeignKeys()) assert.match(sql, /DROP CONSTRAINT/);
+});

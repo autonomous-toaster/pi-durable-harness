@@ -52,8 +52,10 @@ export async function openPostgresStorage(options: PostgresStorageOptions): Prom
 		if (!(await database.tryAdvisoryLock(advisoryKey(`${options.schema}\u0000${options.prefix}`)))) {
 			throw new SessionLockedError(options.session ?? options.prefix, options.schema);
 		}
-		// The prefix keeps each session's table set apart inside the shared schema.
-		return await SqliteStorage.open(database, { prefix: options.prefix });
+		const storage = await SqliteStorage.open(database, { prefix: options.prefix });
+		// The migrations create and rebuild tables; the references go on once they are done.
+		await database.applyReferences();
+		return storage;
 	} catch (error) {
 		await database.close().catch(() => {});
 		throw error;
