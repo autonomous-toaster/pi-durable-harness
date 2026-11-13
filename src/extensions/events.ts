@@ -47,6 +47,8 @@ export const DISPATCHED_EVENTS: ReadonlySet<string> = new Set([
 	"user_bash",
 	"input",
 	"resources_discover",
+	// Asked through `dispatchCollect`, so the harness applies the action it returns.
+	"cache_warming_decision",
 ]);
 
 /**

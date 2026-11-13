@@ -36,7 +36,10 @@ await build({
 	format: "cjs",
 	target: "node22",
 	outfile: main,
-	alias: { "@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js": codemodeTool },
+	alias: {
+		"@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js": codemodeTool,
+		"@earendil-works/pi-coding-agent/dist/core/cache-warmer.js": join(root, "node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.js"),
+	},
 	// SEA's main is CommonJS and has no module URL, but pi computes one at load
 	// (`fileURLToPath(import.meta.url)`) and resolves a sibling from it when it runs
 	// an image resize. Every module in a bundle shares one URL, so it is pinned to

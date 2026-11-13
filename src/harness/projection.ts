@@ -16,6 +16,17 @@ export type ControlData =
 	| { readonly type: "thinking_level_change"; readonly level: string }
 	| { readonly type: "session_info"; readonly name?: string }
 	| { readonly type: "label"; readonly label: string }
+	/**
+	 * A completed cache refresh. pi records one as a `usage` entry with kind `cache_warm`,
+	 * which its interface draws as one line and its cost total includes.
+	 */
+	| {
+			readonly type: "cache_warm";
+			readonly provider: string;
+			readonly model: string;
+			readonly usage: JsonValue;
+			readonly note?: string;
+	  }
 	/** A `!command` the user ran; pi keeps it in the transcript as a bashExecution message. */
 	| {
 			readonly type: "bash_result";
@@ -76,6 +87,18 @@ function controlEntry(entry: EntryRecord, parentId: string | null, data: Control
 					excludeFromContext: data.excludeFromContext,
 					timestamp: Date.now(),
 				},
+			};
+		case "cache_warm":
+			// The shape pi's `SessionManager.appendUsage` writes, so the panel's cost
+			// breakdown and the interface's warm line read it without a special case.
+			return {
+				...base,
+				type: "usage",
+				kind: "cache_warm",
+				provider: data.provider,
+				model: data.model,
+				usage: data.usage,
+				...(data.note === undefined ? {} : { note: data.note }),
 			};
 		default:
 			// A control entry whose payload this build does not know is kept verbatim.

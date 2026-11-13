@@ -62,7 +62,7 @@ export class HarnessSession implements RpcSession {
 			steeringMode: policy.steeringMode ?? "all",
 			followUpMode: policy.followUpMode ?? "one-at-a-time",
 			sessionId: this.sessionId,
-			sessionFile: null,
+			sessionFile: this.#engine.sessionLocation ?? null,
 			autoCompactionEnabled: policy.autoCompaction ?? true,
 			messageCount: view.entries.filter((entry) => entry.model !== undefined).length,
 			pendingMessageCount: inbox.items?.length ?? 0,

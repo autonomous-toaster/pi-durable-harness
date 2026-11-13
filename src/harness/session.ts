@@ -65,6 +65,17 @@ export function sessionFile(config: HarnessConfig, sessionId: string): string {
 	return join(config.sessionDir, cwdSlug(config.cwd), `${sessionStem(config.tenant, sessionId)}.sqlite`);
 }
 
+/**
+ * Where a session's entries live, for pi's info panel and for the RPC status
+ * (tasks 4.1, 4.2). A local session reports its file; a PostgreSQL session reports the
+ * storage identity it is addressed by; an ephemeral session reports nothing, because
+ * nothing is stored.
+ */
+export function sessionLocation(config: HarnessConfig, sessionId: string): string | undefined {
+	if (config.ephemeral) return undefined;
+	return config.pg === undefined ? sessionFile(config, sessionId) : `postgres:${config.schema}/${config.tenant}__${sessionId}`;
+}
+
 /** Create the catalog table once; it shares the schema with the session tables. */
 async function ensureCatalog(client: pg.PoolClient, schema: string): Promise<void> {
 	await client.query(

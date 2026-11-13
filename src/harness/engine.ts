@@ -30,9 +30,11 @@ import {
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ScopedModel } from "@earendil-works/pi-coding-agent";
 import type { Pool } from "pg";
-import { currentConversation, sessionFile, sessionPrefix, setCurrentConversation, stampSession } from "./session.js";
+import { currentConversation, sessionFile, sessionLocation, sessionPrefix, setCurrentConversation, stampSession } from "./session.js";
 import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
+import { createCacheWarming, type CacheWarming } from "./warming.js";
+import { projectEntries } from "./projection.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
 import { skillCommands, type RpcCommandInfo } from "./skills.js";
 
@@ -205,6 +207,10 @@ export class HarnessEngine {
 	/** Session-lifecycle handlers consulted before a session change (task 3.11). */
 	readonly #sessionHandlers: PiSessionHandler[] = [];
 	#conversation: Conversation;
+	/** pi's cache warmer, or undefined when the session cannot warm (task 3.1). */
+	#warming: CacheWarming | undefined;
+	/** The branch pi's economics read, kept current by every read of the entries (task 3.1). */
+	#branch: unknown[];
 
 	private constructor(options: {
 		harness: Harness;
@@ -219,6 +225,8 @@ export class HarnessEngine {
 		closeStorage: () => Promise<void>;
 		stamp?: () => Promise<void>;
 		modelScope?: readonly ScopedModel[];
+		warming?: CacheWarming;
+		branch?: unknown[];
 	}) {
 		this.#harness = options.harness;
 		this.#conversation = options.conversation;
@@ -232,6 +240,8 @@ export class HarnessEngine {
 		this.#closeStorage = options.closeStorage;
 		this.#stamp = options.stamp;
 		this.#modelScope = options.modelScope ?? [];
+		this.#warming = options.warming;
+		this.#branch = options.branch ?? [];
 	}
 
 	static async open(options: HarnessEngineOptions): Promise<HarnessEngine> {
@@ -291,10 +301,33 @@ export class HarnessEngine {
 				await configureCodemodeDescription(callable);
 			}
 			const envs = new ExecutionEnvs(config.cwd);
+			// The warmer needs the runtime durable calls, so it is built first and its proxy
+			// is what durable receives; the branch and the usage sink reach the conversation
+			// through holders that are filled in below (tasks 3.1, 3.5).
+			const holder: { conversation?: Conversation; branch: unknown[] } = { branch: [] };
+			const branch = (): unknown[] => holder.branch;
+			const warming = await createCacheWarming({
+				models: modelRuntime,
+				mode: () => settingsManager.getCacheWarmingMode(),
+				branch,
+				appendUsage: (usage) => {
+					const conversation = holder.conversation;
+					if (conversation === undefined) return;
+					void conversation
+						.commit(
+							(tx) =>
+								tx.appendEntry(ControlEntry, conversation.id, {
+									data: { type: "cache_warm", ...usage } as never,
+								}),
+							CONTEXT,
+						)
+						.catch(() => {});
+				},
+			});
 			const harness = await Harness.open(
 				opened.storage,
 				{
-					models: modelRuntime,
+					models: warming.models,
 					registry,
 					settings,
 					env: envs.env,
@@ -309,6 +342,7 @@ export class HarnessEngine {
 			const recorded = await currentConversation(config, key).catch(() => undefined);
 			const resumed = recorded === undefined ? undefined : await harness.conversation(recorded as never, CONTEXT);
 			const conversation = resumed ?? root;
+			holder.conversation = conversation;
 			const opened2 = new HarnessEngine({
 				harness,
 				conversation,
@@ -322,6 +356,8 @@ export class HarnessEngine {
 				mcpServers: servers,
 				rootId: String(root.id),
 				identity: { config, key },
+				warming,
+				branch: holder.branch,
 			});
 			opened2.#thinkingLevel = agent.thinkingLevel ?? undefined;
 			opened2.#declaredTools = declared.map((tool) => ({
@@ -526,7 +562,14 @@ export class HarnessEngine {
 	}
 
 	entries(limit = 512): Promise<readonly EntryRecord[]> {
-		return this.#conversation.entries({ order: "ascending" }, limit, undefined, CONTEXT).then((page) => page.items);
+		return this.#conversation.entries({ order: "ascending" }, limit, undefined, CONTEXT).then((page) => {
+			// The warmer reads the branch synchronously, so the projected entries are kept
+			// here: every read of the entries is a chance to make that view current.
+			const projected = projectEntries(page.items).entries;
+			this.#branch.length = 0;
+			this.#branch.push(...projected);
+			return page.items;
+		});
 	}
 
 	submit(content: string | readonly unknown[], whenBusy?: "steer" | "followUp" | "reject"): Promise<Submission> {
@@ -538,11 +581,34 @@ export class HarnessEngine {
 		);
 	}
 
+	/** Where this session's entries live, as pi's panel and the RPC status report it (task 4.1). */
+	get sessionLocation(): string | undefined {
+		return sessionLocation(this.#identity.config, this.#identity.key);
+	}
+
+	/** What the info panel prints for cache warming (task 3.4). */
+	get cacheWarmingStatus(): unknown {
+		return this.#warming?.status;
+	}
+
+	/** The extension hand-off for a warming decision (task 3.6). */
+	setCacheWarmingDecider(decide: ((event: { readonly action: string }) => Promise<string>) | undefined): void {
+		this.#warming?.setDecider(decide);
+	}
+
+	/** The warming mode changed, so an active run is reconciled (task 3.3). */
+	cacheWarmingModeChanged(): void {
+		this.#warming?.onModeChanged();
+	}
+
 	/** Submit one prompt and resolve to whether it was answered (task 2.2). */
 	async submitAndWait(content: string | readonly unknown[], whenBusy?: "steer" | "followUp"): Promise<boolean> {
 		// Awaiting the submission is what advances the run; pi's own prompt() does too.
 		const submission = await this.submit(content, whenBusy);
 		const settled = await submission.wait(CONTEXT);
+		// A run ended: the warmer decides whether to keep the entry warm (task 3.3).
+		await this.entries().catch(() => []);
+		this.#warming?.onSettled();
 		// A run ended, so this session is the most recently used one (task 2.3).
 		this.markActivity();
 		return settled.status === "done";
@@ -623,6 +689,7 @@ export class HarnessEngine {
 			entryId === null
 				? await this.#harness.createConversation({ ownership: { kind: "ownerless" } }, CONTEXT)
 				: await this.#conversation.fork(entryId as never, { ownership: { kind: "ownerless" } }, CONTEXT);
+		this.#warming?.cancel();
 		this.#conversation = conversation;
 		const id = String(conversation.id);
 		await setCurrentConversation(this.#identity.config, this.#identity.key, id).catch(() => {});
@@ -731,6 +798,9 @@ export class HarnessEngine {
 	}
 
 	async close(): Promise<void> {
+		// A refresh in flight stops with the session; a warm request outliving it would
+		// write into a closed conversation.
+		this.#warming?.cancel();
 		await this.#harness.close(CONTEXT);
 		await this.#closeStorage();
 	}

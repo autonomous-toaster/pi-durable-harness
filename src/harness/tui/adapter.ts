@@ -759,9 +759,12 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		},
 		setCacheWarmingMode(mode: string) {
 			(options.settingsManager as { setCacheWarmingMode?: (mode: string) => void }).setCacheWarmingMode?.(mode);
+			// An active run is reconciled against the new mode, as pi does.
+			engine.cacheWarmingModeChanged();
 		},
+		// pi's info panel renders this with its own formatter (task 3.4).
 		get cacheWarmingStatus() {
-			return undefined;
+			return engine.cacheWarmingStatus;
 		},
 		/** Durable compacts through its own task; the TUI only needs to ask. */
 		// pi hands this result to the caller's onComplete, so the value has to travel.

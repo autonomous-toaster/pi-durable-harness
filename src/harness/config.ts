@@ -7,7 +7,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { resolveConnection, selectsPostgres } from "../storage/postgres/connection.js";
 
@@ -57,6 +58,12 @@ export interface HarnessConfig {
 	readonly skillPaths: readonly string[];
 	/** `--prompt-template`: extra template files or directories, repeatable. */
 	readonly promptTemplatePaths: readonly string[];
+	/** `--theme`: a theme file or directory pi's loader reads; each value is a path. */
+	readonly themePaths: readonly string[];
+	/** `--no-themes`: pi's discovery switch; a theme named with `--theme` still loads. */
+	readonly noThemes: boolean;
+	/** `--use-theme`: the theme the session starts on. */
+	readonly useTheme: string | undefined;
 	/** `--models`: comma-separated scope patterns for startup and cycling. */
 	readonly modelPatterns: readonly string[];
 	/** `--api-key`: a non-persistent key for the selected provider. */
@@ -99,9 +106,11 @@ const OPTIONS = {
 	models: { type: "string" },
 	"api-key": { type: "string" },
 	fork: { type: "string" },
+	theme: { type: "string", multiple: true },
+	"no-themes": { type: "boolean" },
+	"use-theme": { type: "string" },
 	// still accepted and ignored
 	export: { type: "string" },
-	theme: { type: "string" },
 } as const;
 
 type Parsed = {
@@ -142,6 +151,21 @@ function resolveTextOrFile(value: string): string {
 		// An unreadable path falls back to the literal text, as pi does.
 	}
 	return value;
+}
+
+/** The prefixes pi reads as a package source rather than a path. */
+const REMOTE_SOURCES = ["npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:"] as const;
+
+/**
+ * Resolve one `--theme` value the way pi resolves a CLI path: a package source stays
+ * as written, a `file:` URL becomes its path, and everything else resolves against the
+ * working directory after `~` expands.
+ */
+function resolveThemePath(cwd: string, value: string): string {
+	const trimmed = value.trim();
+	if (REMOTE_SOURCES.some((prefix) => trimmed.startsWith(prefix))) return trimmed;
+	if (trimmed.startsWith("file://")) return fileURLToPath(trimmed);
+	return resolve(cwd, expandTilde(trimmed));
 }
 
 export function resolveConfig(
@@ -225,6 +249,19 @@ export function resolveConfig(
 							? "json"
 							: "print";
 
+	// A theme path that names nothing is a diagnostic now, not a startup failure later.
+	const themePaths = list("theme").map((value) => resolveThemePath(cwd, value));
+	for (const [index, path] of themePaths.entries()) {
+		const given = list("theme")[index]!;
+		if (REMOTE_SOURCES.some((prefix) => given.trim().startsWith(prefix))) continue;
+		if (!existsSync(path)) warnings.push(`--theme ${given}: no theme file or directory at ${path}`);
+	}
+	const themeSettings = {
+		themePaths: themePaths as readonly string[],
+		noThemes: flag("no-themes"),
+		useTheme: text("use-theme"),
+	};
+
 	return {
 		mode,
 		interfaceName,
@@ -250,6 +287,7 @@ export function resolveConfig(
 		appendSystemPrompt,
 		skillPaths: list("skill"),
 		promptTemplatePaths: list("prompt-template"),
+		...themeSettings,
 		modelPatterns: (text("models") ?? "")
 			.split(",")
 			.map((pattern) => pattern.trim())

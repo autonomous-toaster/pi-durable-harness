@@ -222,7 +222,10 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `--fork <id>` | Copy a session into a new one in this directory (`--session-id` names it) |
 | `--system-prompt <text|path>` | Replace the built-in preamble |
 | `--append-system-prompt <text|path>` | Append to it; repeatable |
-| `--export` / `--theme` | Accepted for pi compatibility and not acted on |
+| `--theme <path>` | Load a theme file or directory (repeatable); pi's loader validates it |
+| `--use-theme <name>` | Start on that theme; without it the stored selection stands |
+| `--no-themes` | Load no discovered theme; a theme named with `--theme` still loads |
+| `--export` | Accepted for pi compatibility and not acted on |
 | `--offline` / `-h, --help` | Offline mode / usage |
 
 Without a positional prompt, a terminal gets **the TUI** (pi's own interface, see [The TUI](#the-tui)); a pipe or `--mode rpc` serves RPC instead. A positional prompt selects a one-shot mode and the process exits `0` when the prompt is answered (non-zero otherwise). `--mode tui` forces the TUI where it would not be selected.
@@ -288,10 +291,11 @@ Settings that the harness reads live at every use (steering/follow-up mode, comp
   - **Dispatched from the RPC commands**: `model_select`, `thinking_level_select`, `session_info_changed`, `session_tree`, `user_bash`, `input`, and the `session_before_switch/fork/tree` vetoes.
   - **Also applied**: `registerProvider` → the model runtime, `registerCommand` → the command registry, `registerFlag` → the process arguments, `resources_discover` → extra skill and template paths.
   - **Accepted with no effect, as in pi's own RPC mode**: entry/message/tool renderers, markdown transformers, shortcuts, and `ui_prompt_*` — they need a terminal.
-  - **Reported on stderr**: only the surfaces with no seam — `project_trust`, `mcp_servers_change`, `cache_warming_decision`, `before_provider_request`, `before_provider_headers`, `after_provider_response`, and `provider_stream_event`. A handler result the harness cannot apply (such as `before_agent_start`'s `systemPrompt`) is reported too, never dropped silently.
+  - **Applied from the warmer's decision**: `cache_warming_decision` — a handler's `action` overrides pi's choice, and pi's choice stands when no handler subscribed or a handler throws.
+  - **Reported on stderr**: only the surfaces with no seam — `project_trust`, `mcp_servers_change`, `before_provider_request`, `before_provider_headers`, `after_provider_response`, and `provider_stream_event`. A handler result the harness cannot apply (such as `before_agent_start`'s `systemPrompt`) is reported too, never dropped silently.
 - **Skills** are listed by `get_commands` as `skill:<name>` and expanded from `/skill:<name> <args>` before the model call, as pi does. A `disable-model-invocation` skill stays command-invocable and is hidden from model selection.
 - **Prompt templates** appear in `get_commands` with `source: "prompt"`.
-- **Themes** are discovered but not used (the RPC surface has no terminal to apply them to).
+- **Themes** load through pi's loader, so `/theme`, the theme picker, and `--theme`/`--use-theme` behave as pi's do where there is a terminal; RPC has no terminal to apply them to.
 
 Project resources are gated on trust: `AGENTS.md`, project prompts, project skills, and other project resources load only when the project is trusted, resolved through pi's `ProjectTrustStore` so a decision saved for a parent folder applies — matching pi's order (trust, then project resources).
 
@@ -437,6 +441,7 @@ What is durable: the transcript, the session identity, the agent's model and thi
 
 - The TUI needs `pi-tui`'s **native terminal helper**, a platform addon it loads by path. The ESM build resolves it from the installed package tree; the executable cannot, so `scripts/build-sea.mjs` copies it beside the binary (`dist/sea/native/<platform>/prebuilds/<platform>-<arch>/`), which is the last place pi-tui looks.
 - Extensions render through **pi's runner** — bound beside the durable host with the TUI's UI context — while execution stays on the durable host, so a hook runs once.
+- **Cache warming is pi's warmer.** The runtime durable calls is wrapped, so each session request arms pi's `CacheWarmer` with exactly the request the provider receives; the schedule, the economics, the safety windows, and the Cache Warming block in `/session` are pi's. A model that reports no prompt cache lifetime prints `Inactive (cache lifetime unavailable)`, as pi does.
 - Node flags go through the environment, as for the SEA binary: `NODE_OPTIONS=--trace-warnings node dist/cli.js`.
 
 ## Supported RPC commands

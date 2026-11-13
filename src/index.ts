@@ -17,7 +17,8 @@ import { dirname, relative } from "node:path";
 import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
 import { copySession } from "./harness/fork.js";
-import { newSessionId, resolveSession, sessionFile } from "./harness/session.js";
+import { applyThemeSelection } from "./harness/settings.js";
+import { newSessionId, resolveSession } from "./harness/session.js";
 import { runOneShot } from "./harness/oneshot.js";
 import type { PromptResources } from "./harness/prompt.js";
 import {
@@ -86,6 +87,9 @@ Prompt:
   --append-system-prompt <text|path>   append to it; repeatable
   --skill <path>                       load a skill file or directory; repeatable
   --prompt-template <path>             load a template file or directory; repeatable
+  --theme <path>                       load a theme file or directory; repeatable
+  --use-theme <name>                   start on a theme; keeps pi's stored selection otherwise
+  --no-themes                          load neither user themes nor theme discovery
   @path                                include a text file or an image
   --                                   end options; everything after is a prompt
 
@@ -94,7 +98,7 @@ Other:
   --offline             no network activity
 
 Accepted for pi compatibility and not acted on:
-  --export, --theme
+  --export
 
 Environment (PostgreSQL; each prefixed name wins over the bare libpq name):
   PI_DURABLE_DATABASE_URL        server URL; unset stores in SQLite
@@ -154,6 +158,8 @@ async function reloadResources(
 		noExtensions: true,
 		additionalSkillPaths: [...config.skillPaths, ...discovered.skillPaths],
 		additionalPromptTemplatePaths: [...config.promptTemplatePaths, ...discovered.promptPaths],
+		additionalThemePaths: [...config.themePaths],
+		noThemes: config.noThemes,
 	});
 	// The answer, not the manager: `reload` flips the manager to untrusted for its
 	// bootstrap pass, so asking it back would report the value it just forced.
@@ -279,6 +285,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// pi resolves trust before anything loads: the store, the default, or the answer to
 	// a prompt. The answer is what the loader, the manager, MCP and the TUI all use.
 	const settingsManager = SettingsManager.create(config.cwd, config.agentDir);
+	// `--use-theme` selects the theme the way pi's own startup does, before the session opens.
+	applyThemeSelection(settingsManager, config.useTheme);
 	const trusted = await resolveProjectTrust(config.agentDir, config.cwd, settingsManager);
 	settingsManager.setProjectTrusted(trusted);
 
@@ -337,6 +345,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 		noExtensions: false,
 		additionalSkillPaths: [...config.skillPaths],
 		additionalPromptTemplatePaths: [...config.promptTemplatePaths],
+		additionalThemePaths: [...config.themePaths],
+		noThemes: config.noThemes,
 	});
 	await loader.reload({ resolveProjectTrust: async () => trusted });
 
@@ -509,6 +519,15 @@ export async function main(argv: readonly string[]): Promise<void> {
 			),
 		() => refreshSnapshot(engine, snapshot),
 	);
+	// An extension may override the warming decision; without a handler, or when one
+	// throws, pi's own decision stands (task 3.6).
+	engine.setCacheWarmingDecider(async (event) => {
+		const results = await bus.dispatchCollect("cache_warming_decision", { type: "cache_warming_decision", ...event });
+		const action = [...results].reverse().find((result) => result !== undefined && result !== null && typeof result === "object" && "action" in result) as
+			| { readonly action?: unknown }
+			| undefined;
+		return typeof action?.action === "string" ? action.action : event.action;
+	});
 	const session = new HarnessSession(engine, key, bus);
 	try {
 		if (config.interfaceName === "tui") {
@@ -518,9 +537,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 				cwd: config.cwd,
 				agentDir: config.agentDir,
 				sessionId: key,
-				...(config.pg === undefined
-					? { sessionFile: sessionFile(config, key) }
-					: { sessionFile: `postgres:${config.schema}/${config.tenant}__${key}` }),
+				// The panel and the RPC status read the same value (task 4.1).
+				...(engine.sessionLocation === undefined ? {} : { sessionFile: engine.sessionLocation }),
 				settingsManager,
 				resourceLoader: tuiResourceLoader,
 				modelRuntime,
@@ -531,6 +549,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 				persisted: !config.ephemeral,
 				defaultSessionDir: config.defaultSessionDir,
 				extensions: loaded.extensions,
+				...(config.useTheme === undefined ? {} : { initialThemeSetting: config.useTheme }),
 				verbose: config.mode === "tui" ? true : false,
 			});
 		} else if (config.interfaceName !== "rpc") {

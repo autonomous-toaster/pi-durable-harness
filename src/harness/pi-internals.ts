@@ -51,3 +51,37 @@ export async function createCodemodeDescription(
 	const mod = (await loadCodemodeModule()) as unknown as PiCodemodeModule;
 	return mod.createCodemodeDescription(tools, options);
 }
+
+/** pi's cache warmer, which owns the schedule, the economics, and the extension hand-off. */
+interface PiCacheWarmerModule {
+	CacheWarmer: new (
+		models: { streamSimple: (...args: never[]) => unknown },
+		sessionManager: { appendUsage: (...args: never[]) => unknown; getBranch: () => readonly unknown[] },
+		getMode: () => string,
+		decide?: (event: { readonly action: string }) => Promise<string>,
+	) => PiCacheWarmerLike;
+	formatCacheWarmingStatus(status: unknown, now?: number): string;
+}
+
+/** The members the harness drives; `status` is pi's own status object. */
+export interface PiCacheWarmerLike {
+	readonly status: unknown;
+	onWarmed?: (entry: unknown) => void;
+	start(request: { readonly model: unknown; readonly context: unknown; readonly options: unknown }, isCurrent: () => boolean): void;
+	onAgentSettled(): void;
+	onModeChanged(): void;
+	cancel(): void;
+}
+
+let warming: Promise<unknown> | undefined;
+
+/** Load pi's cache warmer once; the bundler inlines the specifier, `dist` falls back to the URL. */
+export function loadCacheWarmerModule(): Promise<unknown> {
+	// @ts-expect-error -- pi's exports map hides this path; the bundler resolves it.
+	warming ??= import("@earendil-works/pi-coding-agent/dist/core/cache-warmer.js").catch(() =>
+		import(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/core/cache-warmer.js", import.meta.url).href),
+	);
+	return warming;
+}
+
+export type { PiCacheWarmerModule };

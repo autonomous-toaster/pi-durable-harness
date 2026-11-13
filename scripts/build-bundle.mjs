@@ -9,6 +9,7 @@
 // its own CommonJS bundle because a SEA main cannot be ESM.
 import { build } from "esbuild";
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // pi's exports map hides the codemode description composer, so the source names
@@ -25,7 +26,10 @@ await build({
 	format: "esm",
 	target: "node22",
 	outfile: "dist/bundle/cli.js",
-	alias: { "@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js": codemodeTool },
+	alias: {
+		"@earendil-works/pi-coding-agent/dist/extensions/codemode/tool.js": codemodeTool,
+		"@earendil-works/pi-coding-agent/dist/core/cache-warmer.js": join(dirname(codemodeTool), "..", "..", "core", "cache-warmer.js"),
+	},
 	// The codemode sandbox needs the QuickJS wasm; inline it so the single file
 	// carries it, rather than resolving `quickjs-wasi` from a missing node_modules.
 	loader: { ".wasm": "binary" },

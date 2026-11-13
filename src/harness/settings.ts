@@ -39,3 +39,12 @@ export function createHarnessSettings(settings: SettingsManager, options: { read
 		},
 	};
 }
+
+/**
+ * `--use-theme`: pi's startup selects a theme by overriding the setting, so a stored
+ * selection and the flag cannot disagree. The TUI also receives the name as its initial
+ * setting, which is what the first frame draws with.
+ */
+export function applyThemeSelection(settings: SettingsManager, theme: string | undefined): void {
+	if (theme !== undefined) settings.applyOverrides({ theme });
+}
