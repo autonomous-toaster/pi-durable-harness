@@ -8,7 +8,14 @@ client  ──JSONL──►  harness (this repo)  ──►  Pi Durable Harness
                                                              Memory │ SQLite │ PostgreSQL
 ```
 
-Design and requirements live in the archived OpenSpec changes: [`2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness), [`2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/) (MCP exposure), and [`2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/) (pi pin, skills, extensions), plus [`re-pin-pi-152`](openspec/changes/re-pin-pi-152/) (pi 1.5.2 re-pin and state-based event projection); main specs are under [`openspec/specs/`](openspec/specs/).
+Design and requirements live in the archived OpenSpec changes — the harness
+([`2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/)), MCP exposure
+([`2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/)), the pi pin, skills and extensions
+([`2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/)), the 1.5.2 re-pin
+([`2026-11-11-re-pin-pi-152`](openspec/changes/archive/2026-11-11-re-pin-pi-152/)), session identity
+([`2026-11-12-session-identity`](openspec/changes/archive/2026-11-12-session-identity/)), pi's TUI over durable state
+([`2026-11-13-tui-parity`](openspec/changes/archive/2026-11-13-tui-parity/)), and the libpq connection settings
+([`2026-11-13-pg-env-connection`](openspec/changes/archive/2026-11-13-pg-env-connection/)); the main specs are under [`openspec/specs/`](openspec/specs/).
 
 ---
 
@@ -133,20 +140,25 @@ node tools/rpc-call.mjs --session-id demo -- \
 {"command":"get_entries","success":true,"data":{"entries":[{…"type":"message"…},{…"type":"custom"…},{…"type":"message"…}],"leafId":"11"}}
 ```
 
-**6. Inspect the database.** Each session is one schema, `s_<slug>_<hash-of-key>`:
+**6. Inspect the database.** Every session shares one schema and one set of tables; a
+row belongs to a session through its `session` column, so the table count does not grow
+with the session count:
 
 ```bash
 podman exec harness-pg psql -U harness -d harness -c \
-  "SELECT table_schema FROM information_schema.tables WHERE table_name='entries' AND table_schema LIKE 's_%';"
+  "SELECT session, count(*) AS rows FROM durable.entries GROUP BY session ORDER BY 1;"
 
+# The session column is a hash of tenant and session id, so ask for the newest one.
 podman exec harness-pg psql -U harness -d harness -c \
-  "SELECT id, (record::jsonb)->>'kind' AS kind FROM s_demo_2a97516c354b.entries ORDER BY id;"
+  "SELECT id, (record::jsonb)->>'kind' AS kind FROM durable.entries
+    WHERE session = (SELECT session FROM durable.entries ORDER BY id DESC LIMIT 1)
+    ORDER BY id;"
 ```
 
 ```text
-   table_schema
-----------------------
- s_demo_2a97516c354b
+      session      | rows
+-------------------+------
+ s_2a97516c354b_   |    3
 
  id |     kind
 ----+--------------
@@ -208,6 +220,9 @@ Flags it acts on (other pi flags are parsed and ignored so a client can pass pi'
 | `--models <patterns>` | Comma-separated scope for startup and cycling (pi's own matcher) |
 | `--api-key <key>` | Non-persistent key for the provider named by `--model`/`--models` |
 | `--fork <id>` | Copy a session into a new one in this directory (`--session-id` names it) |
+| `--system-prompt <text|path>` | Replace the built-in preamble |
+| `--append-system-prompt <text|path>` | Append to it; repeatable |
+| `--export` / `--theme` | Accepted for pi compatibility and not acted on |
 | `--offline` / `-h, --help` | Offline mode / usage |
 
 Without a positional prompt, a terminal gets **the TUI** (pi's own interface, see [The TUI](#the-tui)); a pipe or `--mode rpc` serves RPC instead. A positional prompt selects a one-shot mode and the process exits `0` when the prompt is answered (non-zero otherwise). `--mode tui` forces the TUI where it would not be selected.
@@ -233,7 +248,7 @@ requirement.
 | --- | --- |
 | `PI_DURABLE_DATABASE_URL` | PostgreSQL URL. When set, storage is PostgreSQL; otherwise SQLite under `--session-dir`. The URL is one way to name a server, not the only one. |
 | `PI_DURABLE_PG` | `1` selects PostgreSQL without a URL, so the fields below describe the server. |
-| `PI_DURABLE_PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | The connection fields, each `PI_DURABLE_` plus the libpq name. `PGPASSWORD` keeps the password out of the URL and out of shell history. |
+| `PI_DURABLE_PGHOST` / `PI_DURABLE_PGPORT` / `PI_DURABLE_PGUSER` / `PI_DURABLE_PGPASSWORD` / `PI_DURABLE_PGDATABASE` | The connection fields, each `PI_DURABLE_` plus the libpq name. `PI_DURABLE_PGPASSWORD` keeps the password out of the URL and out of shell history. |
 | `PI_DURABLE_PGSSLMODE` | `disable`, `require`, `verify-ca`, or `verify-full`. `require` encrypts; the `verify` modes also prove the server, which needs a root certificate. `allow` and `prefer` are refused: this backend never falls back to plaintext. |
 | `PI_DURABLE_PGSSLROOTCERT` | Root certificate in PEM, for `verify-ca` and `verify-full`. `~` expands. |
 | `PI_DURABLE_PGSSLCERT` / `PI_DURABLE_PGSSLKEY` | Client certificate and key in PEM, for mutual TLS. Set both or neither. |
@@ -286,8 +301,8 @@ Storage is selected by configuration and is invisible to the client.
 
 | Backend | When | Notes |
 | --- | --- | --- |
-| **PostgreSQL** | `PI_DURABLE_DATABASE_URL` set | One schema (`PI_DURABLE_PG_SCHEMA`) and one table set for every session — a `session` column plus a row-level-security policy, run as the `durable_scope` role so the policy is not bypassed — and a `harness_sessions` catalog holding `(tenant, cwd, session, last_used)` for `-c`. The `pg_advisory_lock` keys on schema and prefix, so two sessions open together and a second writer of one session is refused. |
-| **SQLite** | default | One file per session at `<sessionDir>/<cwd>/<tenant>__<session>.sqlite`, via `node:sqlite`. The directory groups a working directory's sessions and the file's modification time answers `-c`. |
+| **PostgreSQL** | `PI_DURABLE_DATABASE_URL`, `PI_DURABLE_PGHOST`, or `PI_DURABLE_PG=1` | One schema (`PI_DURABLE_PG_SCHEMA`) and one table set for every session — a `session` column plus a row-level-security policy, run as the `durable_scope` role so the policy is not bypassed — and a `harness_sessions` catalog holding `(tenant, cwd, session, last_used)` for `-c`. The `pg_advisory_lock` keys on schema and prefix, so two sessions open together and a second writer of one session is refused. |
+| **SQLite** | default (`--no-session` aside) | One file per session at `<sessionDir>/<cwd-slug>/<tenant-slug>__<session>.sqlite`, via `node:sqlite`. A slug is the lowercased name, cut to 24 characters, plus eight hex digits of its hash, so `~/work/app` groups under `users_you_1a2b3c4d`; the file's modification time answers `-c`. |
 | **Memory** | `--no-session` | Ephemeral. |
 
 PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. The backend creates the schema itself, in its final shape, and records durable's current schema version — so the core's migration pass, which exists to upgrade databases an older build made, has nothing to apply. Six references the portable core cannot declare are added after the tables: entries, tasks, and submissions to their conversation, a conversation to its owner conversation and to its task, and a document revision to its document. They are `DEFERRABLE INITIALLY DEFERRED`, because durable writes a conversation before the task that owns it.
@@ -424,17 +439,6 @@ What is durable: the transcript, the session identity, the agent's model and thi
 - Extensions render through **pi's runner** — bound beside the durable host with the TUI's UI context — while execution stays on the durable host, so a hook runs once.
 - Node flags go through the environment, as for the SEA binary: `NODE_OPTIONS=--trace-warnings node dist/cli.js`.
 
-## Running under Open Terminal
-
-Open Terminal starts the agent with `--mode rpc --session-id <id> --append-system-prompt <text|path>` and passes its configured command straight to `create_subprocess_exec`, so `OPEN_TERMINAL_PI_COMMAND` must be a **path to an executable file**, not a command line:
-
-```sh
-#!/bin/sh
-exec node /opt/pi-durable/dist/index.js "$@"
-```
-
-Set `PI_DURABLE_DATABASE_URL` to make a run survive a container restart: without it the session lives in SQLite under the workspace home, which the terminal reaps. Node >= 22.19 is required, and there is no single-executable build to copy — build the harness in the image.
-
 ## Supported RPC commands
 
 All of pi's RPC commands are accepted:
@@ -451,7 +455,7 @@ All of pi's RPC commands are accepted:
 | Sessions | `new_session`, `switch_session`, `fork`, `clone`, `get_fork_messages`, `set_session_name`, `export_html` |
 | Discovery | `get_commands` (extension commands, prompt templates, skills) |
 
-Behavior matched to **pinned pi 1.5.2** (`test/fixtures/pi-1.5.2/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; `extension_ui_response` is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
+Behavior matched to **pinned pi 1.5.2** (`test/fixtures/pi-1.5.2/`): malformed JSON is answered with a `success:false` response carrying no `command`/`id`; unknown commands are answered by name; an `extension_ui_response` with no dialog waiting on that id is ignored without ending the process; `get_state` reports the harness session id and a `null` session file (or omits it when ephemeral).
 
 Events: `agent_start`, `turn_start`, `message_start`, `message_update` (one `assistantMessageEvent` per change, as `text`/`thinking`/`toolcall` `_start`, `_delta`, `_end`), `message_end`, `tool_execution_start/update/end`, `turn_end`, `agent_end`, `queue_update`, `compaction_start/end`, `auto_retry_start/end`, `entry_appended`, `thinking_level_changed`, `bash_execution_update`, and `agent_settled` (synthesized when the session is quiescent).
 
@@ -507,7 +511,7 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 
 ## Limitations
 
-- **Extension UI** (`extension_ui_request/response`) is not implemented; inbound `extension_ui_response` records are ignored, and `ctx.ui.*` calls in a hosted extension are inert.
+- **Extension UI** is pi's in the TUI and a round trip in RPC. In the TUI, pi's own UI context serves every `ctx.ui.*` call — dialogs, widgets, status, title. In RPC, `select`, `confirm`, `input`, and `editor` reach the client as `extension_ui_request` and resolve from `extension_ui_response`; `notify`, `setStatus`, `setWidget`, and `setTitle` stay inert there, since a client that ignores them would otherwise be awaited forever. One-shot and JSON modes attach no UI at all, so `ctx.hasUI` is false and an extension takes its non-interactive branch.
 - **Provider-level extension hooks** are reported rather than applied: `before_provider_request`, `before_provider_headers`, `after_provider_response`, and `provider_stream_event`, because durable exposes the message list and the parsed message, not the provider payload or headers. `before_agent_start`'s `systemPrompt` and `message` results are reported the same way.
 - The `read` tool cannot read image files; image *input* in prompts is supported (mapped to content blocks).
 - `find`/`grep`/`ls` are functionally equivalent to pi's, not byte-identical in formatting.
@@ -577,6 +581,10 @@ src/
     session.ts               durable-backed RpcSession implementation
   storage/postgres/
     ddl.ts                   SQLite dialect -> PostgreSQL translation
+    connection.ts            the connection, from prefixed and standard names
+    ssl.ts                   TLS mode, certificates, the encrypted check
+    schema.ts                the schema this backend creates, in its final shape
+    layout.ts                one table set: session column, keys, policies, references
     database.ts              SqliteDatabase facade over one PG connection
     storage.ts               open storage, advisory lock
   tools/
@@ -599,7 +607,10 @@ scripts/                     check.mjs, build-bundle.mjs
 - RPC protocol: <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md>
 - Pi Durable: <https://github.com/earendil-works/pi/tree/main/packages/durable>
 - Session format: <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md>
-- This change: [`openspec/changes/archive/2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/) (the harness)
+- The harness: [`openspec/changes/archive/2026-10-08-durable-rpc-harness`](openspec/changes/archive/2026-10-08-durable-rpc-harness/)
 - MCP exposure parity: [`openspec/changes/archive/2026-10-08-mcp-exposure-parity`](openspec/changes/archive/2026-10-08-mcp-exposure-parity/)
 - pi pin, skills, and extensions: [`openspec/changes/archive/2026-10-27-pi-compat-skills-extensions`](openspec/changes/archive/2026-10-27-pi-compat-skills-extensions/)
-- pi 1.5.2 re-pin and state-based event projection: [`openspec/changes/re-pin-pi-152`](openspec/changes/re-pin-pi-152/)
+- pi 1.5.2 re-pin and state-based event projection: [`openspec/changes/archive/2026-11-11-re-pin-pi-152`](openspec/changes/archive/2026-11-11-re-pin-pi-152/)
+- Session identity: [`openspec/changes/archive/2026-11-12-session-identity`](openspec/changes/archive/2026-11-12-session-identity/)
+- pi's TUI over durable state: [`openspec/changes/archive/2026-11-13-tui-parity`](openspec/changes/archive/2026-11-13-tui-parity/)
+- libpq connection settings: [`openspec/changes/archive/2026-11-13-pg-env-connection`](openspec/changes/archive/2026-11-13-pg-env-connection/)
