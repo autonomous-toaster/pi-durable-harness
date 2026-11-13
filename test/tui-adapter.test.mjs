@@ -238,3 +238,34 @@ test("a branch summary request is refused, not silently skipped", async () => {
 	assert.deepEqual(result, { cancelled: false, aborted: true });
 	assert.equal(rewound, false);
 });
+
+// pi prints the path /export gets back, so an export must write a file and answer it.
+test("an export writes the file and answers its path", async () => {
+	const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = await mkdtemp(join(tmpdir(), "export-test-"));
+	const engine = fakeEngine();
+	engine.exportHtml = async () => "<html>transcript</html>";
+	const runtime = createTuiRuntime(engine, options);
+	await runtime.refresh();
+	try {
+		const htmlPath = await runtime.session.exportToHtml(join(dir, "out.html"));
+		assert.equal(htmlPath, join(dir, "out.html"));
+		assert.equal(await readFile(htmlPath, "utf8"), "<html>transcript</html>");
+
+		const jsonlPath = await runtime.session.exportToJsonl(join(dir, "out.jsonl"));
+		assert.equal(jsonlPath, join(dir, "out.jsonl"));
+		assert.match(await readFile(jsonlPath, "utf8"), /"type":"message"/);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// pi hands the compact result to the caller's onComplete, so the value must travel.
+test("compact answers what the engine compacted", async () => {
+	const engine = fakeEngine();
+	engine.compact = async (instructions) => ({ summary: `compacted ${instructions}` });
+	const runtime = createTuiRuntime(engine, options);
+	assert.deepEqual(await runtime.session.compact("focus on the tests"), { summary: "compacted focus on the tests" });
+});

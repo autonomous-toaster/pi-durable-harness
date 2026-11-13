@@ -16,8 +16,9 @@ import { createExtensionRuntime, ExtensionRunner, type Extension } from "@earend
 import type { HarnessEngine } from "../engine.js";
 import { projectEntries, projectEntry } from "../projection.js";
 import { spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { type SkillLike, type TemplateLike, expandPromptTemplate, expandSkillCommand } from "./slash.js";
 
@@ -741,8 +742,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			return undefined;
 		},
 		/** Durable compacts through its own task; the TUI only needs to ask. */
-		async compact() {
-			await engine.compact?.(undefined as never);
+		// pi hands this result to the caller's onComplete, so the value has to travel.
+		async compact(instructions?: string) {
+			return await engine.compact?.(instructions);
 		},
 		abortCompaction: () => undefined,
 		abortBranchSummary: () => undefined,
@@ -775,11 +777,28 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			}
 			await refresh();
 		},
-		async exportToHtml() {
-			return engine.exportHtml();
+		/**
+		 * pi writes the file and returns its path, which the TUI prints. Returning the
+		 * HTML itself made `/export` print a document and write nothing.
+		 */
+		async exportToHtml(outputPath?: string, _options?: { readonly themeName?: string }) {
+			const html = await engine.exportHtml();
+			const path = outputPath === undefined
+				? join(process.cwd(), `pi-durable-session-${options.sessionId}.html`)
+				: resolve(process.cwd(), outputPath);
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, html, "utf8");
+			return path;
 		},
-		exportToJsonl() {
-			return entries.map((entry) => JSON.stringify(projectEntry(entry as never, null))).join("\n");
+		/** The same contract as pi's: write a JSONL file and answer its path. */
+		async exportToJsonl(outputPath?: string) {
+			const lines = entries.map((entry) => JSON.stringify(projectEntry(entry as never, null))).join("\n");
+			const path = outputPath === undefined
+				? resolve(process.cwd(), `session-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.jsonl`)
+				: resolve(process.cwd(), outputPath);
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, `${lines}\n`, "utf8");
+			return path;
 		},
 		async cycleModel() {
 			const models = (await engine.availableModels?.()) ?? [];
@@ -981,15 +1000,23 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		setRebindSession: () => undefined,
 		setBeforeSessionInvalidate: () => undefined,
 		switchSession: async (sessionPath: string) => ({ cancelled: !(await engine.switchTo(sessionPath)) }),
+		// A new conversation, recorded as the one the session continues in — the same
+		// pointer a rewind writes, or a restart would fall back to the first one.
 		newSession: async () => {
-			const created = await engine.newConversation();
-			await engine.switchTo(String(created.id));
+			await engine.rewind(null);
+			await refresh();
 			return { cancelled: false };
 		},
-		fork: async (entryId: string) => ({
-			cancelled: false,
-			selectedText: String((await engine.fork(entryId)).conversationId),
-		}),
+		// pi puts the text of the forked message back in the editor, so a conversation id
+		// there filled the editor with a hash.
+		fork: async (entryId: string) => {
+			const target = (piEntries() as readonly { readonly id?: unknown; readonly message?: { readonly content?: unknown } }[]).find(
+				(entry) => String(entry.id) === String(entryId),
+			);
+			await engine.rewind(String(entryId));
+			await refresh();
+			return { cancelled: false, selectedText: textOfContent(target?.message?.content) };
+		},
 		importFromJsonl: async () => ({ cancelled: true }),
 		dispose: async () => {},
 		refresh,
