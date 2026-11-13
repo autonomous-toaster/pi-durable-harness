@@ -109,9 +109,9 @@ test("an unsupported surface is reported on stderr and the run continues (task 3
 	const lines = [];
 	reportDiagnostics(diagnostics, (text) => lines.push(text));
 	assert.equal(lines.length, diagnostics.length);
-	for (const line of lines) assert.match(line, /^pi-durable-harness: extension .* unhosted surface: /);
+	for (const line of lines) assert.match(line, /^pi-durable: extension .* unhosted surface: /);
 	assert.match(lines[0], /before_provider_headers/);
-	assert.equal(formatDiagnostic({ extension: "p", surface: "s" }), "pi-durable-harness: extension p uses an unhosted surface: s");
+	assert.equal(formatDiagnostic({ extension: "p", surface: "s" }), "pi-durable: extension p uses an unhosted surface: s");
 });
 
 test("a translated extension installs into the engine registry with its tool and hooks (task 3.7)", async () => {

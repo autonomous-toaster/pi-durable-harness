@@ -82,7 +82,7 @@ export interface LoadedMcp {
 
 async function connect(server: ResolvedServer, cwd: string): Promise<McpClient> {
 	const config = server.transport ?? {};
-	const client = new McpClient({ name: "pi-durable-harness", version: "0.0.0" });
+	const client = new McpClient({ name: "pi-durable", version: "0.0.0" });
 	if (config.command !== undefined) {
 		await client.connect(
 			new StdioTransport({
@@ -119,7 +119,7 @@ export async function loadMcpTools(
 	registered: readonly RegisteredMcpServer[] = [],
 ): Promise<LoadedMcp> {
 	const settings = await loadMcpSettings(agentDir, cwd, registered);
-	for (const warning of settings.warnings) process.stderr.write(`pi-durable-harness: ${warning}\n`);
+	for (const warning of settings.warnings) process.stderr.write(`pi-durable: ${warning}\n`);
 	const clients = new Map<string, McpClient>();
 	const entries: McpToolEntry[] = [];
 	const resourceServers: string[] = [];
@@ -153,7 +153,7 @@ export async function loadMcpTools(
 				// A server without resource support is not an error.
 			}
 		} catch (error) {
-			process.stderr.write(`pi-durable-harness: MCP server ${server.name} failed: ${String(error)}\n`);
+			process.stderr.write(`pi-durable: MCP server ${server.name} failed: ${String(error)}\n`);
 		}
 	}
 

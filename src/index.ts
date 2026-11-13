@@ -41,11 +41,11 @@ import { HarnessSession } from "./rpc/session.js";
 import { loadMcpTools } from "./tools/mcp.js";
 import type { RegisteredMcpServer } from "./tools/exposure.js";
 
-const USAGE = `pi-durable-harness — pi-RPC-compatible harness backed by Pi Durable
+const USAGE = `pi-durable — pi-RPC-compatible harness backed by Pi Durable
 
 Usage:
-  pi-durable-harness [options] [prompt ...]
-  pi-durable-harness --mode rpc              serve pi's RPC protocol on stdin/stdout
+  pi-durable [options] [prompt ...]
+  pi-durable --mode rpc              serve pi's RPC protocol on stdin/stdout
 
 Modes:
   --mode rpc            serve RPC; the default when no prompt is given
@@ -141,12 +141,12 @@ function projectTrusted(agentDir: string, cwd: string): boolean {
 
 export async function main(argv: readonly string[]): Promise<void> {
 	const config = resolveConfig(argv, process.env);
-	for (const warning of config.warnings) process.stderr.write(`pi-durable-harness: ${warning}\n`);
+	for (const warning of config.warnings) process.stderr.write(`pi-durable: ${warning}\n`);
 	if (config.databaseUrl !== undefined) {
 		// Said before connecting, because the pooler's answer is cryptic.
 		const { missingTenant } = await import("./storage/postgres/ssl.js");
 		const tenant = missingTenant(config.databaseUrl);
-		if (tenant !== undefined) process.stderr.write(`pi-durable-harness: ${tenant}\n`);
+		if (tenant !== undefined) process.stderr.write(`pi-durable: ${tenant}\n`);
 	}
 	if (config.help) {
 		process.stdout.write(USAGE);
@@ -155,7 +155,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 	// A malformed session id cannot be opened, and rewriting it would silently
 	// continue the wrong session (task 1.3).
 	if (config.sessionError !== undefined) {
-		process.stderr.write(`pi-durable-harness: ${config.sessionError}\n`);
+		process.stderr.write(`pi-durable: ${config.sessionError}\n`);
 		process.exitCode = 1;
 		return;
 	}
@@ -169,7 +169,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 		config.forkFrom === undefined
 			? await resolveSession(config)
 			: { id: config.sessionKey ?? newSessionId() };
-	if (resolved.warning !== undefined) process.stderr.write(`pi-durable-harness: ${resolved.warning}\n`);
+	if (resolved.warning !== undefined) process.stderr.write(`pi-durable: ${resolved.warning}\n`);
 	const key = resolved.id;
 	const modelRuntime = await ModelRuntime.create();
 	const settingsManager = SettingsManager.create(config.cwd);
@@ -181,7 +181,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 			? undefined
 			: await resolveModelScopeWithDiagnostics([...config.modelPatterns], modelRuntime);
 	for (const diagnostic of scope?.diagnostics ?? []) {
-		process.stderr.write(`pi-durable-harness: ${diagnostic.message}\n`);
+		process.stderr.write(`pi-durable: ${diagnostic.message}\n`);
 	}
 	const cliModel = resolveCliModel({
 		...(config.provider === undefined ? {} : { cliProvider: config.provider }),
@@ -191,20 +191,20 @@ export async function main(argv: readonly string[]): Promise<void> {
 		modelRuntime,
 	});
 	if (cliModel.error !== undefined) {
-		process.stderr.write(`pi-durable-harness: ${cliModel.error}\n`);
+		process.stderr.write(`pi-durable: ${cliModel.error}\n`);
 		process.exitCode = 1;
 		return;
 	}
-	if (cliModel.warning !== undefined) process.stderr.write(`pi-durable-harness: ${cliModel.warning}\n`);
+	if (cliModel.warning !== undefined) process.stderr.write(`pi-durable: ${cliModel.warning}\n`);
 	if (config.forkFrom !== undefined) {
 		// pi: the fork lands in this directory as a new session named by --session-id.
 		const source = await openSessionStorage(config, config.forkFrom);
 		const target = await openSessionStorage(config, key);
 		try {
 			const copied = await copySession(source.storage, target.storage, modelRuntime);
-			process.stderr.write(`pi-durable-harness: forked ${copied.entries} entries from ${config.forkFrom}\n`);
+			process.stderr.write(`pi-durable: forked ${copied.entries} entries from ${config.forkFrom}\n`);
 		} catch (error) {
-			process.stderr.write(`pi-durable-harness: fork failed: ${error instanceof Error ? error.message : String(error)}\n`);
+			process.stderr.write(`pi-durable: fork failed: ${error instanceof Error ? error.message : String(error)}\n`);
 			process.exitCode = 1;
 			return;
 		} finally {
@@ -216,7 +216,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 		// pi: the key applies to the provider of the model named by --model/--models.
 		const provider = cliModel.model?.provider ?? scope?.scopedModels[0]?.model.provider;
 		if (provider === undefined) {
-			process.stderr.write("pi-durable-harness: --api-key requires --model or --models\n");
+			process.stderr.write("pi-durable: --api-key requires --model or --models\n");
 			process.exitCode = 1;
 			return;
 		}
@@ -234,7 +234,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 	// pi extensions: translate what the loader recorded, report the rest (tasks 3.1-3.11).
 	const loaded = loader.getExtensions();
-	for (const failure of loaded.errors) process.stderr.write(`pi-durable-harness: extension ${failure.path} failed: ${failure.error}\n`);
+	for (const failure of loaded.errors) process.stderr.write(`pi-durable: extension ${failure.path} failed: ${failure.error}\n`);
 	// The session view exists only once the engine and its snapshot do, so the
 	// provider is assigned below and the tool call reads it at call time (task 5.1).
 	let sessionView: (() => Promise<Record<string, unknown>>) | undefined;
@@ -323,7 +323,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 			const held = error instanceof Error ? error.message : "this session";
 			process.stderr.write(
 				[
-					`pi-durable-harness: ${held}; this process cannot write to it.`,
+					`pi-durable: ${held}; this process cannot write to it.`,
 					"  Continue in a new session:      node dist/cli.js",
 					"  Continue in a fork of it:       node dist/cli.js --fork <session-id>",
 					"  Or name another session:        node dist/cli.js --session-id <id>",
@@ -377,7 +377,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 		extensionContext(),
 		(result) =>
 			process.stderr.write(
-				`pi-durable-harness: extension ${result.extension} returned ${result.field} on ${result.event}; an RPC host does not apply it\n`,
+				`pi-durable: extension ${result.extension} returned ${result.field} on ${result.event}; an RPC host does not apply it\n`,
 			),
 		() => refreshSnapshot(engine, snapshot),
 	);

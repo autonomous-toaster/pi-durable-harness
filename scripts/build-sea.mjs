@@ -8,7 +8,7 @@
 // disabled". `npx -y node@22.19.0 scripts/build-sea.mjs` is one way.
 import { spawnSync } from "node:child_process";
 import { chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
@@ -16,7 +16,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const out = join(root, "dist", "sea");
 const main = join(out, "cli.cjs");
 const blob = join(out, "sea.blob");
-const binary = join(out, "pi-durable-harness");
+const binary = join(out, "pi-durable");
 const darwin = process.platform === "darwin";
 
 const run = (command, args, options = {}) => {
@@ -55,7 +55,7 @@ await writeFile(
 const prepared = spawnSync(process.execPath, ["--experimental-sea-config", config], { encoding: "utf8" });
 if (`${prepared.stderr}${prepared.stdout}`.includes("Single executable application is disabled")) {
 	process.stderr.write(
-		`pi-durable-harness: this Node cannot build a SEA binary (${process.execPath}).\n` +
+		`pi-durable: this Node cannot build a SEA binary (${process.execPath}).\n` +
 			"Shared builds, such as Homebrew's, disable it. Use an official Node build, for example\n" +
 			"  npx -y node@22.19.0 scripts/build-sea.mjs\n",
 	);
@@ -65,6 +65,19 @@ if (prepared.status !== 0) {
 	process.stderr.write(prepared.stderr || "sea preparation failed\n");
 	process.exit(1);
 }
+
+// The TUI's terminal helper is a native addon pi-tui loads by path, and the last
+// place it looks is beside the executable. A SEA carries no node_modules, so it is
+// copied there — without it the binary runs every mode except the TUI.
+const nativePath = join("native", process.platform, "prebuilds", `${process.platform}-${process.arch}`, `${process.platform}-platform.node`);
+const helper = join(root, "node_modules", "@earendil-works", "pi-tui", nativePath);
+const helperOut = join(out, nativePath);
+await mkdir(dirname(helperOut), { recursive: true });
+await copyFile(helper, helperOut).catch(() => {
+	process.stderr.write(`pi-durable: pi-tui has no ${nativePath}; the binary would run every mode but the TUI\n`);
+	process.exit(1);
+});
+process.stdout.write(`copied ${nativePath}\n`);
 
 await copyFile(process.execPath, binary);
 await chmod(binary, 0o755);

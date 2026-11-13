@@ -86,7 +86,7 @@ export function classifyExtension(
 
 /** A message for one diagnostic line (task 3.6). */
 export function formatDiagnostic(diagnostic: SurfaceDiagnostic): string {
-	return `pi-durable-harness: extension ${diagnostic.extension} uses an unhosted surface: ${diagnostic.surface}`;
+	return `pi-durable: extension ${diagnostic.extension} uses an unhosted surface: ${diagnostic.surface}`;
 }
 
 /** Emit one stderr line per unhosted surface; the run continues (tasks 3.6, 3.7). */
@@ -296,7 +296,7 @@ export async function discoverResources(
 				if (Array.isArray(result?.promptPaths)) promptPaths.push(...result.promptPaths);
 			} catch (error) {
 				process.stderr.write(
-					`pi-durable-harness: extension ${extension.path} failed on resources_discover: ${error instanceof Error ? error.message : String(error)}\n`,
+					`pi-durable: extension ${extension.path} failed on resources_discover: ${error instanceof Error ? error.message : String(error)}\n`,
 				);
 			}
 		}

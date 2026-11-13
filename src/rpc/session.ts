@@ -151,7 +151,7 @@ export class HarnessSession implements RpcSession {
 
 	async exportHtml(outputPath: string | undefined): Promise<{ path: string }> {
 		const html = await this.#engine.exportHtml();
-		const path = outputPath ?? join(await mkdtemp(join(tmpdir(), "pi-durable-harness-")), "session.html");
+		const path = outputPath ?? join(await mkdtemp(join(tmpdir(), "pi-durable-")), "session.html");
 		await writeFile(path, html, "utf8");
 		return { path };
 	}

@@ -11,6 +11,6 @@ void (async () => {
 	const { main } = await import("./index.js");
 	await main(process.argv.slice(2));
 })().catch((error: unknown) => {
-	process.stderr.write(`pi-durable-harness: ${error instanceof Error ? error.message : String(error)}\n`);
+	process.stderr.write(`pi-durable: ${error instanceof Error ? error.message : String(error)}\n`);
 	process.exitCode = 1;
 });

@@ -1,4 +1,4 @@
-# pi-durable-harness
+# pi-durable
 
 A **pi-RPC-compatible harness** whose execution engine is [`@earendil-works/pi-durable`](https://github.com/earendil-works/pi). It speaks pi's RPC protocol (JSONL commands/events on stdin/stdout) so an existing pi RPC client can drive it as a drop-in for `pi --mode rpc`, while conversations, tasks, and documents are committed durably and can be stored in **PostgreSQL**.
 
@@ -24,7 +24,7 @@ Design and requirements live in the archived OpenSpec changes: [`2026-10-08-dura
 npm install          # exact-pinned dependencies
 npm run build        # tsc -> dist/  (the supported release artifact)
 npm run build:bundle # self-contained single-file ESM bundle -> dist/bundle/cli.js
-npm run build:sea    # Node SEA executable -> dist/sea/pi-durable-harness
+npm run build:sea    # Node SEA executable -> dist/sea/pi-durable
                      # (needs a SEA-capable Node: official builds yes, Homebrew no)
 npm run check        # typecheck + build + tests (PostgreSQL tests skipped without TEST_DATABASE_URL)
 ```
@@ -37,21 +37,21 @@ node dist/cli.js --help
 node dist/bundle/cli.js --help
 ```
 
-The package installs one command, **`pi-durable-harness`** (`bin` in `package.json`, running `dist/cli.js`), so `npm link` makes it available on `PATH`. Diagnostics it writes to stderr are prefixed with the same name.
+The package installs one command, **`pi-durable`** (`bin` in `package.json`, running `dist/cli.js`), so `npm link` makes it available on `PATH`. Diagnostics it writes to stderr are prefixed with the same name.
 
-The package is private. Three artifacts are supported: the ESM package (`dist/`), one JavaScript file (`dist/bundle/cli.js`) that runs anywhere Node does with no `node_modules` beside it, and a single Node SEA executable (`dist/sea/pi-durable-harness`) that needs no Node installed. See [Limitations](#limitations) for what the SEA build gives up.
+The package is private. Three artifacts are supported: the ESM package (`dist/`), one JavaScript file (`dist/bundle/cli.js`) that runs anywhere Node does with no `node_modules` beside it, and a single Node SEA executable (`dist/sea/pi-durable`) that needs no Node installed — including the TUI, whose terminal helper it copies beside itself. See [Limitations](#limitations) for what the SEA build gives up.
 
 ### The SEA executable
 
 ```bash
 npx -y node@22.19.0 scripts/build-sea.mjs   # a shared Node cannot build one
-./dist/sea/pi-durable-harness --help
+./dist/sea/pi-durable --help
 ```
 
 Its argv belongs to the harness, not to Node, so a Node flag goes through the environment rather than after the executable:
 
 ```bash
-NODE_OPTIONS=--trace-warnings ./dist/sea/pi-durable-harness --help
+NODE_OPTIONS=--trace-warnings ./dist/sea/pi-durable --help
 ```
 
 `--help` and a PostgreSQL session say nothing on stderr. A session on the SQLite backend prints Node's experimental-feature notice for `node:sqlite`; `NODE_OPTIONS=--no-warnings` silences it.
@@ -295,7 +295,7 @@ Open Terminal starts the agent with `--mode rpc --session-id <id> --append-syste
 
 ```sh
 #!/bin/sh
-exec node /opt/pi-durable-harness/dist/index.js "$@"
+exec node /opt/pi-durable/dist/index.js "$@"
 ```
 
 Set `PI_DURABLE_DATABASE_URL` to make a run survive a container restart: without it the session lives in SQLite under the workspace home, which the terminal reaps. Node >= 22.19 is required, and there is no single-executable build to copy — build the harness in the image.
