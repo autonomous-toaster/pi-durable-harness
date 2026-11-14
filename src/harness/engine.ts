@@ -521,8 +521,7 @@ export class HarnessEngine {
 		this.#records = [...records];
 		this.#cursor = advanceCursor(records, { entryCount: 0, messageCount: 0 });
 		this.#messages = [...(await this.messages().catch(() => []))];
-		const policyEntry = [...records].reverse().find((entry) => entry.kind === "harness.policy");
-		if (policyEntry !== undefined) this.#policy = (policyEntry.data ?? {}) as Policy;
+		this.#policy = await this.storedPolicy().catch(() => this.#policy);
 	}
 
 	/** The newest entry id: the one statement an idle poll issues (task 1.1). */
@@ -549,6 +548,10 @@ export class HarnessEngine {
 		this.#cursor = advanceCursor(entries, this.#cursor);
 		// The snapshot holds the whole branch: a delta appends, a full read replaces.
 		this.#records = plan.kind === "full" ? [...entries] : [...this.#records, ...entries];
+		// The warmer and the extension snapshot read the projected branch, so it follows too.
+		const projected = projectEntries(this.#records).entries;
+		this.#branch.length = 0;
+		this.#branch.push(...projected);
 		// A compaction rewrites what the context holds, so the messages are asked for rather
 		// than appended; otherwise the delta is appended and no further record is read.
 		if (plan.kind === "full" || rewritesContext(entries)) {
@@ -730,8 +733,9 @@ export class HarnessEngine {
 		// Awaiting the submission is what advances the run; pi's own prompt() does too.
 		const submission = await this.submit(content, whenBusy);
 		const settled = await submission.wait(CONTEXT);
-		// A run ended: the warmer decides whether to keep the entry warm (task 3.3).
-		await this.entries().catch(() => []);
+		// A run ended: read what the turn wrote, so the warmer evaluates a current branch, and
+		// let the warmer decide whether to keep the entry warm (tasks 1.1, 3.3).
+		await this.readChanges().catch(() => ({ entries: [], full: false }));
 		this.#warming?.onSettled();
 		// A run ended, so this session is the most recently used one (task 2.3).
 		this.markActivity();
@@ -760,7 +764,13 @@ export class HarnessEngine {
 	}
 
 	/** The latest durable run policy (task 6.1). */
-	async policy(): Promise<Policy> {
+	/** The run policy the snapshot holds: a settings toggle reads no entry (task 2.2). */
+	policy(): Policy {
+		return this.#policy;
+	}
+
+	/** The run policy as stored, for the one caller that needs the stored value (the prime). */
+	async storedPolicy(): Promise<Policy> {
 		const latest = (await this.entries()).findLast((entry) => entry.kind === "harness.policy");
 		return (latest?.data ?? {}) as Policy;
 	}

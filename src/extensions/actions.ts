@@ -99,13 +99,25 @@ export function emptySnapshot(): SessionSnapshot {
 	return { entries: [], leafId: null, messages: [], ready: false };
 }
 
-/** Refresh `snapshot` from durable, so a handler reads it synchronously. */
+/**
+ * Refresh `snapshot` from what the session already read, so a handler reads it synchronously
+ * without costing a storage read per extension event (task 2.3 of `read-economy-2`).
+ */
 export async function refreshSnapshot(engine: HarnessEngine, snapshot: SessionSnapshot): Promise<void> {
 	try {
-		const projected = projectEntries(await engine.entries());
-		snapshot.entries = projected.entries;
-		snapshot.leafId = projected.leafId;
-		snapshot.messages = [...(await engine.messages())];
+		const known = engine.knownEntries;
+		if (!Array.isArray(known)) {
+			// A host without a snapshot keeps the reads it had.
+			const projected = projectEntries(await engine.entries());
+			snapshot.entries = projected.entries;
+			snapshot.leafId = projected.leafId;
+			snapshot.messages = [...(await engine.messages())];
+		} else {
+			const projected = projectEntries(known);
+			snapshot.entries = projected.entries;
+			snapshot.leafId = projected.leafId;
+			snapshot.messages = [...engine.messagesKnown];
+		}
 		(snapshot as { ready: boolean }).ready = true;
 	} catch {
 		// A refresh failure leaves the previous snapshot; handlers still run.

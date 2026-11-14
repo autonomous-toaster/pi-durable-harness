@@ -99,3 +99,19 @@ export function lastAnswerOf(messages: readonly unknown[]): string | undefined {
 	const text = content.flatMap((block) => ((block as { type?: string }).type === "text" ? [(block as { text: string }).text] : [])).join("");
 	return text.length === 0 ? undefined : text;
 }
+
+/** How long the revision stream may stay silent before the safety-net probe runs. */
+export const PROBE_SILENCE_MS = 30_000;
+
+/**
+ * Whether the safety net should probe now (tasks 1.1, 1.2 of `read-economy-2`).
+ *
+ * The revision stream is the signal, and a probe is only the net for a revision the stream did
+ * not deliver. So: a revision within the silence window means the stream is warm and the net is
+ * not needed; otherwise the net runs, at most once per window.
+ */
+export function shouldProbe(input: { readonly now: number; readonly lastRevisionAt: number; readonly lastProbeAt: number }): boolean {
+	const sinceRevision = input.now - input.lastRevisionAt;
+	if (sinceRevision < PROBE_SILENCE_MS) return false;
+	return input.now - input.lastProbeAt >= PROBE_SILENCE_MS;
+}

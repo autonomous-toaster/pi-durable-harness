@@ -322,12 +322,22 @@ cluster against a 92 KB transcript:
 | one `get_state`, before | 41 transcript scans (~3.7 MB) |
 | one `get_state`, after | 6 probes, and no transcript read |
 
-Three rules produce that: an idle poll asks for the newest entry id only, a change reads the
-entries written since the last read, and a status answer comes from the two documents plus the
-snapshot the session already holds — never from the branch. The revision stream stays the primary
-signal, so a change reaches the client without a read at all; the 2-second probe is only the
-safety net for a revision the stream did not deliver. Two cases still read the branch whole: the
-first snapshot of a process, and a branch that moved backwards (a rewind or a fork).
+Measured after the second round, same cluster: **2 probes and 4 rows per minute idle**, 6 probes
+and 5 commits for a whole turn, 1 probe per status poll, and no entry read for a settings toggle.
+
+Four rules produce that: an idle poll asks for the newest entry id only, a change reads the entries
+written since the last read, a status answer comes from the two documents plus the snapshot the
+session already holds, and a settings toggle answers from that snapshot too. The revision stream
+stays the primary signal, so a change reaches the client without a read at all; the probe is only
+the safety net, and it waits for **30 seconds of silence** before running, at most once per window.
+Two cases still read the branch whole: the first snapshot of a process, and a branch that moved
+backwards (a rewind or a fork).
+
+**On PostgreSQL, partial progress is batched by default** — `PI_DURABLE_PERSIST_WITHIN_MS=500`, so a
+streamed answer reaches the store about twice a second instead of ten times, and the WAL behind
+those commits (which a managed provider bills as egress) shrinks with it. The stored answer is
+unchanged; only mid-answer progress is coarser. `PI_DURABLE_PERSIST_WITHIN_MS=0` restores a commit
+per partial, and a SQLite session still stores each partial as it arrives.
 
 PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. The backend creates the schema itself, in its final shape, and records durable's current schema version — so the core's migration pass, which exists to upgrade databases an older build made, has nothing to apply. Six references the portable core cannot declare are added after the tables: entries, tasks, and submissions to their conversation, a conversation to its owner conversation and to its task, and a document revision to its document. They are `DEFERRABLE INITIALLY DEFERRED`, because durable writes a conversation before the task that owns it.
 

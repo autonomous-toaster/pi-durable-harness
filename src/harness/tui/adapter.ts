@@ -13,6 +13,7 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExtensionRuntime, ExtensionRunner, type Extension } from "@earendil-works/pi-coding-agent";
+import { shouldProbe } from "../read-plan.js";
 import type { HarnessEngine } from "../engine.js";
 import { projectEntries, projectEntry } from "../projection.js";
 import { spawn } from "node:child_process";
@@ -380,6 +381,9 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			}
 		};
 		let signature = "";
+		// When the stream last delivered, and when the net last ran (read-economy-2 task 1.1).
+		let lastSignal = Date.now();
+		let lastProbe = 0;
 		const read = async (): Promise<void> => {
 			// Probe first: an idle poll asks for one entry id and reads no record (task 1.1).
 			const result = await engine.readChanges();
@@ -406,15 +410,19 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		};
 		stream.start((call) => {
 			if (call.kind !== "value") return;
+			lastSignal = Date.now();
 			apply(call.value);
 			void read().catch(() => {});
 		});
 		// The revision stream above is the primary signal and costs nothing, so this timer is
-		// only the safety net for a revision it did not deliver. A probe ships one record, so
-		// the cadence is what keeps an idle client cheap (tasks 1.1, 1.2).
+		// only the safety net for a revision it did not deliver. A probe ships whole records, so
+		// the net waits for silence (read-economy-2 task 1.1).
 		poller = setInterval(() => {
+			const now = Date.now();
+			if (!shouldProbe({ now, lastRevisionAt: lastSignal, lastProbeAt: lastProbe })) return;
+			lastProbe = now;
 			void read().catch(() => {});
-		}, 2_000);
+		}, 1_000);
 		// The view poll must never be what keeps the process alive.
 		poller.unref?.();
 	};

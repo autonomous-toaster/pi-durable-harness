@@ -217,8 +217,10 @@ export function resolveConfig(
 			? `invalid session id ${JSON.stringify(sessionKey)}: use letters, numbers, ".", "_" and "-", starting and ending with a letter or number`
 			: undefined;
 
-	// Deferred-progress window (task 6.1). An invalid value warns and falls back to 0.
-	let persistWithinMs = 0;
+	// Deferred-progress window. On a server every partial is a commit and the WAL behind it, so a
+	// PostgreSQL session batches by default; SQLite writes locally, where batching would only
+	// delay the interface. An explicit value wins either way (read-economy-2 tasks 3.1, 3.2).
+	let persistWithinMs = usePostgres ? 500 : 0;
 	const rawPersist = env.PI_DURABLE_PERSIST_WITHIN_MS;
 	if (rawPersist !== undefined) {
 		const parsed = Number(rawPersist);
