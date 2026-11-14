@@ -37,10 +37,18 @@ test("direct bash streams output and injects session metadata", async () => {
 });
 
 test("get_state matches the pinned pi response shape", async () => {
+	// A status answer reads the documents and the newest entry id, and takes the policy, the
+	// agent, and the counts from the snapshot the session already holds.
 	const engine = {
-		resolvedAgent: async () => ({ model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" }),
-		policy: async () => ({}),
-		view: async () => ({ entries: [], docs: {} }),
+		status: async () => ({
+			live: undefined,
+			inbox: undefined,
+			newestEntryId: undefined,
+			entryCount: 0,
+			messageCount: 0,
+			policy: {},
+			agent: { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" },
+		}),
 	};
 	const session = new HarnessSession(engine, "s1");
 	const state = await session.state();
@@ -64,9 +72,15 @@ test("get_state matches the pinned pi response shape", async () => {
 test("get_state counts the full transcript", async () => {
 	const entries = Array.from({ length: 150 }, (_, index) => ({ id: index, kind: "pi.user", model: [{ role: "user", content: "hi" }] }));
 	const engine = {
-		resolvedAgent: async () => ({ model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" }),
-		policy: async () => ({}),
-		view: async () => ({ entries, docs: {} }),
+		status: async () => ({
+			live: undefined,
+			inbox: undefined,
+			newestEntryId: entries.at(-1).id,
+			entryCount: entries.length,
+			messageCount: entries.filter((entry) => entry.model !== undefined).length,
+			policy: {},
+			agent: { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" },
+		}),
 	};
 	const session = new HarnessSession(engine, "s1");
 	const state = await session.state();

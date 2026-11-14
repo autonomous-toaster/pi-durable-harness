@@ -237,19 +237,47 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		}
 	};
 
+	/** Whether the snapshot has been read once; later refreshes answer from the read path. */
+	let primed = false;
+
 	const refresh = async (): Promise<void> => {
 		await loadBuiltinRenderers();
-		const [nextEntries, nextMessages, quiescent, agent] = await Promise.all([
-			engine.entries(),
-			engine.messages(),
-			engine.isQuiescent(),
-			engine.resolvedAgent(),
-		]);
-		entries = nextEntries;
-		messages = nextMessages;
+		if (!primed) {
+			// The first snapshot is the one full read this surface makes (task 2.3); every
+			// later refresh answers from what the read path already holds.
+			try {
+				// A host that offers the read economy primes with one delta read; one that does
+				// not keeps its own reads, so the surface works over either.
+				const known = engine.knownEntries;
+				if (Array.isArray(known)) {
+					// The engine primed at open; the surface renders what the snapshot holds.
+					await engine.readChanges();
+					entries = engine.knownEntries;
+					if (!Array.isArray(entries)) entries = known;
+				} else if (typeof engine.readChanges === "function") {
+					const first = await engine.readChanges();
+					if (Array.isArray(first?.entries)) entries = first.entries;
+				} else {
+					entries = await engine.entries();
+				}
+			} catch {
+				// A surface without a storage keeps the snapshot it started with.
+			}
+			primed = true;
+		}
+		// One read serves the refresh: the entries the watcher just read carry the messages
+		// and the last answer, so a changed poll costs no second storage read (task 2.2).
+		const [quiescent] = await Promise.all([engine.isQuiescent()]);
+		// The snapshot answers from what the last read held; a surface without a storage
+		// keeps the empty list it started with.
+		const known = engine.messagesKnown;
+		if (Array.isArray(known)) messages = known;
+		else if (typeof engine.messages === "function") messages = await engine.messages();
 		idle = quiescent;
 		const registry = options.modelRuntime as { getModel?: (provider: string, id: string) => Record<string, unknown> | undefined };
-		lastAssistant = (await engine.lastAssistantText?.()) ?? lastAssistant;
+		const agent = engine.agentKnown;
+		const answer = engine.lastAnswerKnown;
+		lastAssistant = typeof answer === "string" ? answer : ((await engine.lastAssistantText?.()) ?? lastAssistant);
 		if (scoped.length === 0) {
 			// pi's header lists `enabledModels`, not every model with credentials.
 			const settings = options.settingsManager as { getEnabledModels?: () => readonly string[] };
@@ -262,7 +290,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			});
 		}
 		model =
-			agent.model === undefined
+			agent?.model === undefined
 				? undefined
 				: (registry.getModel?.(agent.model.provider, agent.model.modelId) ?? {
 						provider: agent.model.provider,
@@ -353,14 +381,20 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		};
 		let signature = "";
 		const read = async (): Promise<void> => {
-			const view = await engine.view();
-			// Nothing new means nothing to repaint; polling unconditionally made the TUI
-			// redraw its whole chat five times a second.
-			const entries = view.entries ?? [];
-			const next = `${entries.length}|${String((entries.at(-1) as { readonly id?: unknown } | undefined)?.id ?? "")}|${JSON.stringify(view.docs?.["pi.live"] ?? null).length}`;
+			// Probe first: an idle poll asks for one entry id and reads no record (task 1.1).
+			const result = await engine.readChanges();
+			const changed = Array.isArray(result?.entries) ? result.entries : [];
+			const full = result?.full === true;
+			if (changed.length === 0 && !full) return;
+			const known = engine.knownEntries;
+			const snapshot = Array.isArray(known) ? known : full ? changed : [...entries, ...changed];
+			const next = `${full ? "full" : "delta"}:${changed.length}:${String((changed.at(-1) as { readonly id?: unknown } | undefined)?.id ?? "")}`;
 			if (next === signature) return;
 			signature = next;
-			apply(view);
+			// Documents are read only when something changed, not on every tick (tasks 1.1, 3.1).
+			const documents = await engine.documents();
+			entries = snapshot;
+			apply({ entries: changed, docs: documents });
 			// The synchronous getters answer from this snapshot, so it is refreshed with
 			// every read; without it the footer counters and /session stats stay empty.
 			await refresh();
@@ -375,9 +409,12 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			apply(call.value);
 			void read().catch(() => {});
 		});
+		// The revision stream above is the primary signal and costs nothing, so this timer is
+		// only the safety net for a revision it did not deliver. A probe ships one record, so
+		// the cadence is what keeps an idle client cheap (tasks 1.1, 1.2).
 		poller = setInterval(() => {
 			void read().catch(() => {});
-		}, 200);
+		}, 2_000);
 		// The view poll must never be what keeps the process alive.
 		poller.unref?.();
 	};

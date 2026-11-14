@@ -50,13 +50,15 @@ export class HarnessSession implements RpcSession {
 	}
 
 	async state(): Promise<Record<string, unknown>> {
-		const agent = await this.#engine.resolvedAgent();
-		const policy = await this.#engine.policy();
-		const view = await this.#engine.view();
-		const inbox = (view.docs["pi.inbox"] ?? {}) as { items?: unknown[] };
+		// A status answer reads the two documents and one entry id, never the transcript
+		// (tasks 3.1, 3.2): the policy, the agent and the counts come from the last read.
+		const status = await this.#engine.status();
+		const agent = status.agent;
+		const policy = status.policy;
+		const inbox = (status.inbox ?? {}) as { items?: unknown[] };
 		return {
-			model: agent.model === undefined ? null : { provider: agent.model.provider, id: agent.model.modelId },
-			thinkingLevel: agent.thinkingLevel,
+			model: agent?.model === undefined ? null : { provider: agent.model.provider, id: agent.model.modelId },
+			thinkingLevel: agent?.thinkingLevel,
 			isStreaming: false,
 			isCompacting: false,
 			steeringMode: policy.steeringMode ?? "all",
@@ -64,7 +66,7 @@ export class HarnessSession implements RpcSession {
 			sessionId: this.sessionId,
 			sessionFile: this.#engine.sessionLocation ?? null,
 			autoCompactionEnabled: policy.autoCompaction ?? true,
-			messageCount: view.entries.filter((entry) => entry.model !== undefined).length,
+			messageCount: status.messageCount,
 			pendingMessageCount: inbox.items?.length ?? 0,
 		};
 	}

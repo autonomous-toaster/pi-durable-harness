@@ -309,6 +309,26 @@ Storage is selected by configuration and is invisible to the client.
 | **SQLite** | default (`--no-session` aside) | One file per session at `<sessionDir>/<cwd-slug>/<tenant-slug>__<session>.sqlite`, via `node:sqlite`. A slug is the lowercased name, cut to 24 characters, plus eight hex digits of its hash, so `~/work/app` groups under `users_you_1a2b3c4d`; the file's modification time answers `-c`. |
 | **Memory** | `--no-session` | Ephemeral. |
 
+### What a session reads
+
+A session's storage is read in proportion to what changed, because a billed backend charges for
+every byte it sends and a transcript grows. Measured with `pg_stat_statements` on a local
+cluster against a 92 KB transcript:
+
+| window | reads |
+| --- | --- |
+| idle, before | 5 transcript scans/second, each returning every entry (~2 GB/hour) |
+| idle, after | one probe (the newest entry id) every 2 seconds, no transcript read (~8.6 MB/hour) |
+| one `get_state`, before | 41 transcript scans (~3.7 MB) |
+| one `get_state`, after | 6 probes, and no transcript read |
+
+Three rules produce that: an idle poll asks for the newest entry id only, a change reads the
+entries written since the last read, and a status answer comes from the two documents plus the
+snapshot the session already holds — never from the branch. The revision stream stays the primary
+signal, so a change reaches the client without a read at all; the 2-second probe is only the
+safety net for a revision the stream did not deliver. Two cases still read the branch whole: the
+first snapshot of a process, and a branch that moved backwards (a rewind or a fork).
+
 PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. The backend creates the schema itself, in its final shape, and records durable's current schema version — so the core's migration pass, which exists to upgrade databases an older build made, has nothing to apply. Six references the portable core cannot declare are added after the tables: entries, tasks, and submissions to their conversation, a conversation to its owner conversation and to its task, and a document revision to its document. They are `DEFERRABLE INITIALLY DEFERRED`, because durable writes a conversation before the task that owns it.
 
 One session writes a storage at a time, as durable requires. The advisory lock is keyed on the schema and the session's prefix; a second process on the same session is refused, and told which session it was:

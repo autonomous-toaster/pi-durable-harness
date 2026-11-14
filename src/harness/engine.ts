@@ -35,6 +35,7 @@ import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
 import { createCacheWarming, type CacheWarming } from "./warming.js";
 import { projectEntries } from "./projection.js";
+import { advanceCursor, appendedMessages, lastAnswerOf, planRead, rewritesContext, type SnapshotCursor } from "./read-plan.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
 import { skillCommands, type RpcCommandInfo } from "./skills.js";
 
@@ -211,6 +212,16 @@ export class HarnessEngine {
 	#warming: CacheWarming | undefined;
 	/** The branch pi's economics read, kept current by every read of the entries (task 3.1). */
 	#branch: unknown[];
+	/** What the last read held, so the next read asks only for the delta (tasks 1.1, 2.1). */
+	#cursor: SnapshotCursor = { entryCount: 0, messageCount: 0 };
+	/** The context messages the last read accounts for (task 2.2). */
+	#messages: unknown[] = [];
+	/** The raw entries the snapshot holds, which is what a surface renders (task 2.2). */
+	#records: EntryRecord[] = [];
+	/** The run policy the last read saw, so a status answer reads no entry (task 3.2). */
+	#policy: Policy = {};
+	/** The agent the last read saw, so a status answer reads no entry (task 3.2). */
+	#agent: Awaited<ReturnType<Conversation["agent"]>> | undefined;
 
 	private constructor(options: {
 		harness: Harness;
@@ -365,6 +376,9 @@ export class HarnessEngine {
 				description: tool.description,
 				parameters: tool.parameters,
 			}));
+			// One read seeds the snapshot, so a status answer and the interface never make the
+			// first read themselves (tasks 2.3, 3.2).
+			await opened2.prime().catch(() => {});
 			return opened2;
 		} catch (error) {
 			await opened.close().catch(() => {});
@@ -495,6 +509,116 @@ export class HarnessEngine {
 
 	messages(): Promise<readonly unknown[]> {
 		return this.#conversation.context(CONTEXT).then((view) => view.messages);
+	}
+
+	/**
+	 * Seed the snapshot once, at open (task 2.3): the agent, the policy, the cursor, and the
+	 * context messages. Every later read is a probe unless something changed.
+	 */
+	async prime(): Promise<void> {
+		this.#agent = await this.resolvedAgent().catch(() => undefined);
+		const records = await this.entries(Number.MAX_SAFE_INTEGER);
+		this.#records = [...records];
+		this.#cursor = advanceCursor(records, { entryCount: 0, messageCount: 0 });
+		this.#messages = [...(await this.messages().catch(() => []))];
+		const policyEntry = [...records].reverse().find((entry) => entry.kind === "harness.policy");
+		if (policyEntry !== undefined) this.#policy = (policyEntry.data ?? {}) as Policy;
+	}
+
+	/** The newest entry id: the one statement an idle poll issues (task 1.1). */
+	async probeEntryId(): Promise<number | string | undefined> {
+		const page = await this.#conversation.entries({ order: "descending" }, 1, undefined, CONTEXT);
+		return page.items[0]?.id;
+	}
+
+	/**
+	 * Read what changed since the last read (tasks 1.2, 2.1, 2.2). An idle session reads no
+	 * entry record, an append reads the entries after the held id, and a branch that moved
+	 * backwards is read whole.
+	 */
+	async readChanges(): Promise<{ readonly entries: readonly EntryRecord[]; readonly full: boolean }> {
+		const plan = planRead(await this.probeEntryId(), this.#cursor);
+		if (plan.kind === "none") return { entries: [], full: false };
+		const entries =
+			plan.kind === "delta"
+				? await this.#conversation
+						.entries({ order: "ascending" }, Number.MAX_SAFE_INTEGER, plan.after as never, CONTEXT)
+						.then((page) => page.items)
+				// A full read refreshes the branch the warmer evaluates as well.
+				: await this.entries(Number.MAX_SAFE_INTEGER);
+		this.#cursor = advanceCursor(entries, this.#cursor);
+		// The snapshot holds the whole branch: a delta appends, a full read replaces.
+		this.#records = plan.kind === "full" ? [...entries] : [...this.#records, ...entries];
+		// A compaction rewrites what the context holds, so the messages are asked for rather
+		// than appended; otherwise the delta is appended and no further record is read.
+		if (plan.kind === "full" || rewritesContext(entries)) {
+			// Compaction, fork and summary rules decide what the context holds, so this one
+			// case asks the storage instead of deriving. It is the rare case: a first
+			// snapshot, a rewind, or a compaction entry in the delta.
+			this.#messages = [...(await this.messages())];
+		} else {
+			this.#messages = [...this.#messages, ...appendedMessages(entries)];
+		}
+		const policyEntry = [...entries].reverse().find((entry) => entry.kind === "harness.policy");
+		if (policyEntry !== undefined) this.#policy = { ...this.#policy, ...((policyEntry.data ?? {}) as Policy) };
+		this.#agent = await this.resolvedAgent().catch(() => this.#agent);
+		return { entries, full: plan.kind === "full" };
+	}
+
+	/** The context messages the last read accounts for (task 2.2). */
+	get messagesKnown(): readonly unknown[] {
+		return this.#messages;
+	}
+
+	/** The entries the snapshot holds: what a surface renders without reading (task 2.2). */
+	get knownEntries(): readonly EntryRecord[] {
+		return this.#records;
+	}
+
+	/** The last answer, from the messages already read (task 2.2). */
+	get lastAnswerKnown(): string | undefined {
+		return lastAnswerOf(this.#messages);
+	}
+
+	/** The run policy the last read saw (task 3.2). */
+	get policyKnown(): Policy {
+		return this.#policy;
+	}
+
+	/** The agent the last read saw (task 3.2). */
+	get agentKnown(): Awaited<ReturnType<Conversation["agent"]>> | undefined {
+		return this.#agent;
+	}
+
+	/** The built-in documents alone, for a refresh that already read its entries (task 3.1). */
+	async documents(): Promise<Readonly<Record<string, unknown>>> {
+		const id = this.#conversation.id;
+		const [inbox, live] = await Promise.all([this.watchOnce(InboxDoc, id), this.watchOnce(LiveDoc, id)]);
+		return {
+			...(inbox === undefined ? {} : { "pi.inbox": inbox as never }),
+			...(live === undefined ? {} : { "pi.live": live as never }),
+		};
+	}
+
+	/**
+	 * Everything a status answer needs, without reading the transcript (task 3.1): the two
+	 * documents, the newest entry id, and what the snapshot already holds.
+	 */
+	async status(): Promise<{
+		readonly live: unknown;
+		readonly inbox: unknown;
+		readonly newestEntryId: number | string | undefined;
+		readonly entryCount: number;
+		readonly messageCount: number;
+		readonly policy: Policy;
+		readonly agent: Awaited<ReturnType<Conversation["agent"]>> | undefined;
+	}> {
+		const id = this.#conversation.id;
+		const [live, inbox, newestEntryId] = await Promise.all([this.watchOnce(LiveDoc, id), this.watchOnce(InboxDoc, id), this.probeEntryId()]);
+		// A status answer never reads a record: the count comes from the cursor the last read
+		// left, and the policy and the agent from what that read saw.
+		const { entryCount, messageCount } = this.#cursor;
+		return { live, inbox, newestEntryId, entryCount, messageCount, policy: this.#policy, agent: this.#agent };
 	}
 
 	/**
