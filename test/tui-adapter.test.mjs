@@ -26,6 +26,10 @@ function fakeEngine() {
 		resolvedAgent: async () => ({ model: { provider: "p", modelId: "m" }, thinkingLevel: "high" }),
 		isQuiescent: async () => true,
 		currentThinkingLevel: () => "high",
+		// The adapter remembers a level synchronously because pi renders it before any write.
+		rememberThinkingLevel: (level) => {
+			calls.thinkingLevel = level;
+		},
 		declaredToolNames: () => ["read", "bash"],
 		allTools: () => [{ name: "read", description: "r", parameters: {} }, { name: "bash", description: "b", parameters: {} }],
 		activeTools: (names) => names.map((name) => ({ name })),

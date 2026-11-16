@@ -17,6 +17,7 @@ import { shouldProbe } from "../read-plan.js";
 import type { HarnessEngine } from "../engine.js";
 import { projectEntries, projectEntry } from "../projection.js";
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -26,6 +27,18 @@ import { type SkillLike, type TemplateLike, expandPromptTemplate, expandSkillCom
 const CONTEXT = BACKGROUND_CONTEXT;
 
 type SessionEventListener = (event: unknown) => void;
+
+/**
+ * Run work that pi's interface did not await (tasks: the interface is a synchronous client).
+ * A rejection is reported on stderr instead of becoming an unhandled rejection, which Node
+ * turns into a process exit.
+ */
+function background(work: Promise<unknown> | undefined, what: string): void {
+	if (work === undefined) return;
+	void work.catch((error: unknown) => {
+		process.stderr.write(`pi-durable: ${what} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+	});
+}
 
 export interface TuiAdapterOptions {
 	readonly cwd: string;
@@ -797,7 +810,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			(options.settingsManager as { setFollowUpMode?: (mode: string) => void }).setFollowUpMode?.(mode);
 		},
 		setSessionName(name: string) {
-			void engine.appendControl({ type: "session_info", name } as never);
+			background(engine.appendControl({ type: "session_info", name } as never), "session name");
 		},
 		setAutoCompactionEnabled(enabled: boolean) {
 			(options.settingsManager as { setAutoCompact?: (enabled: boolean) => void }).setAutoCompact?.(enabled);
@@ -860,14 +873,14 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			await writeFile(path, html, "utf8");
 			return path;
 		},
-		/** The same contract as pi's: write a JSONL file and answer its path. */
-		async exportToJsonl(outputPath?: string) {
+		// pi shows the path the moment this returns, so the file is written before it answers.
+		exportToJsonl(outputPath?: string) {
 			const lines = entries.map((entry) => JSON.stringify(projectEntry(entry as never, null))).join("\n");
 			const path = outputPath === undefined
 				? resolve(process.cwd(), `session-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.jsonl`)
 				: resolve(process.cwd(), outputPath);
-			await mkdir(dirname(path), { recursive: true });
-			await writeFile(path, `${lines}\n`, "utf8");
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, `${lines}\n`, "utf8");
 			return path;
 		},
 		async cycleModel() {
@@ -881,13 +894,16 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			await refresh();
 			return true;
 		},
-		async cycleThinkingLevel() {
+		// pi's interface calls this without awaiting and renders the result, so the level is
+		// remembered and answered synchronously; the write follows in the background.
+		cycleThinkingLevel() {
 			const capability = engine as unknown as { getAvailableThinkingLevels?: () => readonly string[] };
 			const levels = capability.getAvailableThinkingLevels?.() ?? ["off", "low", "medium", "high"];
 			const current = engine.currentThinkingLevel() ?? "off";
-			const next = levels[(levels.indexOf(current) + 1) % levels.length];
-			await engine.configure({ thinkingLevel: next } as never);
-			await refresh();
+			const next = levels[(levels.indexOf(current) + 1) % levels.length] ?? "off";
+			engine.rememberThinkingLevel(next);
+			background(engine.configure({ thinkingLevel: next } as never), "thinking level");
+			background(refresh(), "interface snapshot");
 			return next;
 		},
 		/** The TUI's `!command` runs in the session's cwd, as pi's does. */
@@ -929,7 +945,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 			result: { readonly output?: string; readonly exitCode?: number; readonly cancelled?: boolean; readonly truncated?: boolean; readonly fullOutputPath?: string },
 			options?: { readonly excludeFromContext?: boolean },
 		) => {
-			void engine.appendControl({
+			background(engine.appendControl({
 				type: "bash_result",
 				command,
 				output: result.output ?? "",
@@ -938,7 +954,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 				truncated: result.truncated === true,
 				...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
 				excludeFromContext: options?.excludeFromContext === true,
-			} as never);
+			} as never), "bash result");
 		},
 
 		// pi's loader owns the prompt templates; the TUI turns each into a `/name`
@@ -996,7 +1012,11 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		},
 		setModel: (model: { provider: string; id: string }) =>
 			engine.configure({ model: { provider: model.provider, modelId: model.id } } as never),
-		setThinkingLevel: (level: string) => engine.configure({ thinkingLevel: level } as never),
+		setThinkingLevel: (level: string) => {
+			// Synchronous for pi, which renders the level it passed and never awaits this.
+			engine.rememberThinkingLevel(level);
+			background(engine.configure({ thinkingLevel: level } as never), "thinking level");
+		},
 		setScopedModels: (models: { model: Record<string, unknown>; thinkingLevel?: string }[]) => {
 			scoped = models;
 		},

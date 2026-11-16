@@ -469,6 +469,15 @@ export class HarnessEngine {
 		return this.#thinkingLevel;
 	}
 
+	/**
+	 * Remember a thinking level now and persist it in the background. pi's interface is a
+	 * synchronous client: it renders the level before any write completes, so the level the
+	 * interface sees must not be a promise.
+	 */
+	rememberThinkingLevel(level: string): void {
+		this.#thinkingLevel = level;
+	}
+
 	/** Register an extension command so `get_commands` and prompt resolution see it (task 3.9). */
 	registerCommand(command: RpcCommandInfo, handler: (args: string) => unknown): void {
 		this.#extensionCommands.push(command);
