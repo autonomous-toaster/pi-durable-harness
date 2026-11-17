@@ -327,10 +327,15 @@ Three other obligations come with being the host:
 
 - **`SIGINT`/`SIGTERM` close the session** before the process exits, so a held (deferred) commit is
   stored and a running child is reaped. Only `SIGKILL` loses the deferred window — bounded by
-  `PI_DURABLE_PERSIST_WITHIN_MS` (500 ms on PostgreSQL).
+  `PI_DURABLE_PERSIST_WITHIN_MS` (500 ms on PostgreSQL). The flush itself is `close()`'s documented
+  job and the handler is tested; a live mid-stream measurement is still missing, and accepted as
+  such rather than claimed.
 - **A run says why it ended.** `faulted` (`model_error`, `no_model`, `restart_limit`, `invalid_park`)
   and `unanswered` (`turn_limit`, `nothing_to_answer`, `stale`, `aborted`) are reported with the
   framework's advice, and a one-shot run that did not answer exits non-zero.
+- **`/export` writes outside the repository**: an export with no path goes to
+  `<agentDir>/exports/`, because a default that wrote `session-<time>.jsonl` into the working tree is
+  how those files once reached a commit. An explicit path still resolves from the working directory.
 - **A turn does not spend a stamp it does not need**: the `harness_sessions` catalog is written once
   at open, once on a process's first turn, and at most once a minute after.
 

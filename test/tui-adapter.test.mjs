@@ -273,3 +273,21 @@ test("compact answers what the engine compacted", async () => {
 	const runtime = createTuiRuntime(engine, options);
 	assert.deepEqual(await runtime.session.compact("focus on the tests"), { summary: "compacted focus on the tests" });
 });
+
+test("an export without a path never writes into the working directory", async () => {
+	const { mkdtempSync, readdirSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-export-agent-"));
+	const runtime = createTuiRuntime(fakeEngine(), { ...options, agentDir });
+	await runtime.refresh();
+	const before = new Set(readdirSync(process.cwd()));
+
+	const path = runtime.session.exportToJsonl();
+	assert.ok(path.startsWith(agentDir), `the default export belongs to the agent dir, got ${path}`);
+	assert.ok(path.endsWith(".jsonl"));
+	// Nothing new in the working directory: a default that landed here is how session files got
+	// committed once already.
+	const added = readdirSync(process.cwd()).filter((name) => !before.has(name));
+	assert.deepEqual(added, []);
+});

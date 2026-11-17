@@ -867,7 +867,7 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		async exportToHtml(outputPath?: string, _options?: { readonly themeName?: string }) {
 			const html = await engine.exportHtml();
 			const path = outputPath === undefined
-				? join(process.cwd(), `pi-durable-session-${options.sessionId}.html`)
+				? join(options.agentDir ?? join(homedir(), ".pi", "agent"), "exports", `pi-durable-session-${options.sessionId}.html`)
 				: resolve(process.cwd(), outputPath);
 			await mkdir(dirname(path), { recursive: true });
 			await writeFile(path, html, "utf8");
@@ -876,8 +876,11 @@ export function createTuiRuntime(engine: HarnessEngine, options: TuiAdapterOptio
 		// pi shows the path the moment this returns, so the file is written before it answers.
 		exportToJsonl(outputPath?: string) {
 			const lines = entries.map((entry) => JSON.stringify(projectEntry(entry as never, null))).join("\n");
+			// An export without a path belongs in the agent directory, never the working tree: a
+			// default that wrote `session-<time>.jsonl` into the repository is how those files ended
+			// up committed. An explicit path still resolves from the working directory.
 			const path = outputPath === undefined
-				? resolve(process.cwd(), `session-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.jsonl`)
+				? join(options.agentDir ?? join(homedir(), ".pi", "agent"), "exports", `session-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.jsonl`)
 				: resolve(process.cwd(), outputPath);
 			mkdirSync(dirname(path), { recursive: true });
 			writeFileSync(path, `${lines}\n`, "utf8");
