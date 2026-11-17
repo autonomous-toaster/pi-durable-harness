@@ -317,6 +317,12 @@ reopened against the same storage and resumed, and a prompt that arrives during 
 by name (`the session is recovering from a storage failure`) instead of failing at commit. A reopen
 that itself fails backs off (1s, 2s, 4s … capped at 30s) and reports each attempt.
 
+Verified against a live PostgreSQL cluster: with the cluster killed under a running session and
+started again, the process survives, reports the loss, retries with backoff, reopens the session and
+keeps every entry. (Two process-fatal cases had to be fixed for that: `pg` reports a lost connection
+on an idle pooled client *and* on the checked-out client the storage keeps, and an unhandled `error`
+on either exits the process.)
+
 Three other obligations come with being the host:
 
 - **`SIGINT`/`SIGTERM` close the session** before the process exits, so a held (deferred) commit is

@@ -12,6 +12,10 @@
 | T4.1 | Report the reason a run ended |
 | T4.2 | Answer a non-zero exit status for a run that did not answer |
 | T2.4 | Wait between reopen attempts that fail |
+| T2.5 | Bound the close that precedes a reopen |
+| T2.6 | Refuse a reopen for an in-memory session |
+| T2.7 | Name a lock refusal during a reopen |
+| T3.3 | Verify a reopen on PostgreSQL |
 | T6.1 | Document the failure vocabulary and the reopen behaviour |
 
 ## ADDED Requirements
@@ -70,6 +74,42 @@ T2.3 SHALL read the transcript AFTER T2.1 SHALL reopen the session.
 
 - **WHEN** T2.3 reads the transcript of a reopened session
 - **THEN** T2.3 SHALL find every entry committed before the failure and the same session identity
+
+### Requirement: A close that hangs does not stall the reopen
+
+T2.5 SHALL bound the close BEFORE T2.1 SHALL reopen the session.
+
+#### Scenario: The server vanished with clients checked out
+
+- **WHEN** T2.5 closes against a server that no longer answers
+- **THEN** T2.5 SHALL stop waiting at the bound and let the reopen start
+
+### Requirement: An in-memory session is not reopened
+
+T2.6 SHALL refuse a reopen for an in-memory session BEFORE T2.1 SHALL open a second storage.
+
+#### Scenario: A storage failure without a store
+
+- **WHEN** T2.6 reads a failure on a session that keeps nothing
+- **THEN** T2.6 SHALL report that the session cannot be reopened and SHALL NOT open a second store
+
+### Requirement: A lock refusal during a reopen names its cause
+
+T2.7 SHALL name a lock refusal AFTER T1.1 SHALL classify a storage failure.
+
+#### Scenario: The previous connection has not been released
+
+- **WHEN** T2.7 reads a lock refusal while reopening
+- **THEN** T2.7 SHALL report that the previous connection is being waited for, and SHALL NOT name another process
+
+### Requirement: A reopen is verified on PostgreSQL
+
+T3.3 SHALL verify a reopen on PostgreSQL AFTER T2.1 SHALL reopen the session.
+
+#### Scenario: The cluster dies under a running session
+
+- **WHEN** T3.3 stops the PostgreSQL cluster under a running session and starts the cluster again
+- **THEN** T3.3 SHALL find the process alive, the reopen reported, and every entry committed before the failure still present
 
 ### Requirement: A reopen that fails waits before the next attempt
 

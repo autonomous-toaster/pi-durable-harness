@@ -9,10 +9,14 @@
 - [x] 2.2 Answer a prompt with a typed refusal while a reopen is in flight. Verify a test asserts the refusal names the recovery
 - [x] 2.3 Keep the session identity and the transcript pointer across a reopen. Verify a test reads the pre-failure transcript after the reopen at the same session
 - [x] 2.4 Back off between failed reopen attempts and report each one. Verify a test observes the wait and the report
+- [x] 2.5 Bound the close that precedes a reopen. Verify a test asserts a hanging close stops at the bound
+- [x] 2.6 Refuse a reopen for an in-memory session and say why. Verify a test asserts the refusal and that no second store opens
+- [x] 2.7 Name a lock refusal during a reopen as the previous connection. Verify the recovery path reports that cause
 
 ## 3. Shutdown (spec: `failure-diagnostics`)
 
 - [x] 3.1 Close the session on `SIGINT` and `SIGTERM` with a bounded wait. Verify a test sends a signal and observes a close
+- [x] 3.3 Verify a reopen on PostgreSQL across a cluster restart. Verify the measurement keeps the transcript and the process alive
 - [ ] 3.2 Store a held commit before the process exits. Verify a measurement finds the deferred commit stored after a signal mid-stream
 
 ## 4. Run outcomes (spec: `failure-diagnostics`)

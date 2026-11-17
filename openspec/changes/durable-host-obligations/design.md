@@ -36,6 +36,16 @@ One turn on the local PostgreSQL cluster, `pg_stat_statements`, `ollama-cloud/de
   the first turn of a process writes one more, and a second prompt inside the same minute writes
   none (`shouldStamp` throttles to one a minute).
 
+**A live PostgreSQL reopen, measured**: with a session holding 6 entries, the cluster was stopped
+with `-m immediate` and started again. The process stayed alive, reported `connection lost`,
+retried with backoff (`ECONNREFUSED` ×3), then reported `session reopened at conversation 1` — and
+all 6 entries were still there. Two bugs only this path could show had to be fixed first:
+
+- `pg` emits `error` on an **idle pooled client**, and an unhandled `error` is fatal: the process
+  exited before the session could report anything. The pool now carries a listener.
+- The storage holds a **checked-out** client for the session's life, which `pg` does not guard: the
+  same crash came through that client. `PostgresDatabase.open` now takes an `onError` for it.
+
 Not measured: a deferred commit forced to storage by a signal mid-stream. The mechanism is the
 framework's (`close()` stores held commits) and the handler is tested, but the live measurement is
 open — recorded in tasks.md rather than claimed here.

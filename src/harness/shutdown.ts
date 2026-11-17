@@ -65,3 +65,25 @@ export function installShutdown(options: ShutdownOptions): () => void {
 		for (const remove of handlers) remove();
 	};
 }
+
+/**
+ * Resolve when `work` settles or when `timeoutMs` passes, whichever comes first. A close against a
+ * dead PostgreSQL server can hang in `pool.end()` instead of rejecting, so every await on the road
+ * to a reopen goes through this (task 2.5).
+ */
+export async function withTimeout(work: Promise<unknown>, timeoutMs: number): Promise<"settled" | "timed-out"> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const bounded = new Promise<"timed-out">((resolve) => {
+		timer = setTimeout(() => resolve("timed-out"), timeoutMs);
+		timer.unref?.();
+	});
+	const outcome = await Promise.race([
+		work.then(
+			() => "settled" as const,
+			() => "settled" as const,
+		),
+		bounded,
+	]);
+	if (timer !== undefined) clearTimeout(timer);
+	return outcome;
+}

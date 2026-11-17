@@ -229,3 +229,40 @@ test("a one-shot run that did not answer exits non-zero and says why", async () 
 	}
 	assert.ok(written.some((line) => /nothing_to_answer/.test(line) && /caller bug/.test(line)), written.join(""));
 });
+
+const { withTimeout } = await import("../dist/harness/shutdown.js");
+
+test("a close that hangs is bounded", async () => {
+	const started = Date.now();
+	const outcome = await withTimeout(new Promise(() => {}), 40);
+	assert.equal(outcome, "timed-out");
+	assert.ok(Date.now() - started < 500, "it did not wait for the hang");
+	assert.equal(await withTimeout(Promise.resolve(), 40), "settled");
+	assert.equal(await withTimeout(Promise.reject(new Error("x")).catch(() => undefined), 40), "settled");
+});
+
+test("an in-memory session refuses a reopen instead of starting empty", async () => {
+	const { mkdtempSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { resolveConfig } = await import("../dist/harness/config.js");
+	const { HarnessEngine } = await import("../dist/harness/engine.js");
+	const { ModelRuntime, SettingsManager } = await import("@earendil-works/pi-coding-agent");
+
+	const dir = mkdtempSync(join(tmpdir(), "pi-memory-"));
+	const config = resolveConfig(["--no-session"], {}, dir, false);
+	const engine = await HarnessEngine.open({
+		config,
+		key: "memory-probe",
+		modelRuntime: await ModelRuntime.create(),
+		settingsManager: SettingsManager.create(dir, dir),
+		resources: { skills: [], prompts: [], systemPrompt: undefined, appendSystemPrompt: [] },
+	});
+	const lines = [];
+	engine.setFailureReporter((line) => lines.push(line));
+	engine.handleReport({ kind: "storage_failed", error: new Error("gone") });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.ok(lines.some((line) => /cannot be reopened/.test(line) && /in-memory/.test(line)), lines.join("\n"));
+	assert.equal(engine.recovering, false);
+	await engine.close();
+});

@@ -36,6 +36,7 @@ import { createHarnessSettings } from "./settings.js";
 import { createCacheWarming, type CacheWarming } from "./warming.js";
 import { projectEntries } from "./projection.js";
 import { classifyReport, outcomeLine, reopenDelayMs, shouldStamp, unansweredReason } from "./reports.js";
+import { withTimeout } from "./shutdown.js";
 import { advanceCursor, appendedMessages, lastAnswerOf, planRead, rewritesContext, type SnapshotCursor } from "./read-plan.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
 import { skillCommands, type RpcCommandInfo } from "./skills.js";
@@ -61,6 +62,9 @@ import { ControlEntry, PolicyEntry, renderTranscriptHtml, type ControlData, type
 import type { Revision, RevisionStream } from "./events.js";
 
 const CONTEXT = BACKGROUND_CONTEXT;
+
+/** How long a close may take before a reopen moves on (task 2.5). */
+const CLOSE_TIMEOUT_MS = 5_000;
 
 /**
  * A prompt arrived while a failed session was being reopened (task 2.2). The framework's invariant 8
@@ -114,7 +118,13 @@ export interface OpenedStorage {
  * Open one session's storage (tasks 2.1-2.3). The container is the session; the
  * working directory and tenant only name it.
  */
-export async function openSessionStorage(config: HarnessConfig, key: string): Promise<OpenedStorage> {
+export async function openSessionStorage(
+	config: HarnessConfig,
+	key: string,
+	/** Called when an idle pooled client fails: without an `error` listener, `pg` throws and the
+	 *  process exits before the session can report the failure (task 3.3). */
+	onPoolError?: (error: unknown) => void,
+): Promise<OpenedStorage> {
 	if (config.ephemeral) {
 		return { storage: new MemoryStorage(), close: async () => {} };
 	}
@@ -133,6 +143,9 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 		const pool: Pool = new pg.Pool(
 			connectionOptions(config.pg, `-c app.session=${sessionPrefix(config.tenant, key)}`) as never,
 		);
+		// An idle client whose server vanished emits `error` on the pool; unhandled, that is fatal to
+		// the process. Reporting it lets the session fail the way the framework expects, and reopen.
+		pool.on("error", (error: unknown) => onPoolError?.(error));
 		if (config.pg.ssl.enforce) {
 			const probe = await pool.connect().catch(async (error: unknown) => {
 				const hint = connectionHint(connectionString, error);
@@ -152,6 +165,7 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			schema: config.schema,
 			prefix: sessionPrefix(config.tenant, key),
 			session: key,
+			...(onPoolError === undefined ? {} : { onError: onPoolError }),
 		}).catch(async (error: unknown) => {
 			// The pool would keep the process alive after the failure is reported.
 			await pool.end().catch(() => {});
@@ -163,8 +177,10 @@ export async function openSessionStorage(config: HarnessConfig, key: string): Pr
 			storage,
 			stamp,
 			close: async () => {
-				await storage.close(CONTEXT);
-				await pool.end();
+				// A dead server can leave `pool.end()` waiting on clients that will never answer, so
+				// the close is bounded: recovery must be able to move on (task 2.5).
+				await withTimeout(storage.close(CONTEXT), CLOSE_TIMEOUT_MS);
+				await withTimeout(pool.end(), CLOSE_TIMEOUT_MS);
 			},
 		};
 	}
@@ -285,7 +301,10 @@ export class HarnessEngine {
 
 	static async open(options: HarnessEngineOptions): Promise<HarnessEngine> {
 		const { config, key, modelRuntime, settingsManager, resources } = options;
-		const opened = await openSessionStorage(config, key);
+		// The engine is built after the storage, so a pool error reaches it through this handle.
+		let engineRef: HarnessEngine | undefined;
+		const poolError = (error: unknown): void => engineRef?.handlePoolError(error);
+		const opened = await openSessionStorage(config, key, poolError);
 		try {
 			const settings: HarnessSettings = createHarnessSettings(settingsManager, { persistWithinMs: config.persistWithinMs });
 			const registry = (await import("@earendil-works/pi-durable")).createRegistry();
@@ -363,9 +382,7 @@ export class HarnessEngine {
 						.catch(() => {});
 				},
 			});
-			// The engine is built after the harness, so the report handler reaches it through this
-			// handle. A report is how the framework says a session failed or a task faulted (tasks 1.1, 1.2).
-			let engineRef: HarnessEngine | undefined;
+			// A report is how the framework says a session failed or a task faulted (tasks 1.1, 1.2).
 			const onReport = (report: { readonly kind?: string; readonly error?: unknown; readonly reason?: string }): void => {
 				engineRef?.handleReport(report);
 			};
@@ -405,8 +422,8 @@ export class HarnessEngine {
 				branch: holder.branch,
 				// A storage failure reopens the same session storage (task 2.1): the reopen decides
 				// the committed prefix, so nothing is reconstructed from memory.
-				reopen: async () => {
-					const again = await openSessionStorage(config, key);
+				...(config.ephemeral ? {} : { reopen: async () => {
+					const again = await openSessionStorage(config, key, poolError);
 					const next = await Harness.open(
 						again.storage,
 						{ models: warming.models, registry, settings, env: envs.env, onReport },
@@ -418,7 +435,7 @@ export class HarnessEngine {
 					next.resume();
 					holder.conversation = conversation;
 					return { harness: next, conversation, closeStorage: again.close, ...(again.stamp === undefined ? {} : { stamp: again.stamp }) };
-				},
+				} }),
 			});
 			engineRef = opened2;
 			opened2.#thinkingLevel = agent.thinkingLevel ?? undefined;
@@ -793,6 +810,16 @@ export class HarnessEngine {
 	 * One report from the framework (tasks 1.1, 1.2, 2.1). A failed session is reopened; a faulted
 	 * task is shown; anything else is a diagnostic. The framework calls this once per problem.
 	 */
+	/**
+	 * A pooled connection failed while idle (task 3.3). Without this, `pg` throws out of the process
+	 * on an idle client's error before the session can report a failure. The reopen is idempotent, so
+	 * reporting the loss and handing the session to it is safe even if no commit follows.
+	 */
+	handlePoolError(error: unknown): void {
+		this.#onFailure(`connection lost: ${error instanceof Error ? error.message : String(error)}`);
+		void this.#recover();
+	}
+
 	handleReport(report: { readonly kind?: string; readonly error?: unknown; readonly reason?: string }): void {
 		const classified = classifyReport(report);
 		this.#onFailure(classified.line);
@@ -800,20 +827,28 @@ export class HarnessEngine {
 	}
 
 	/**
-	 * Reopen a session whose storage failed (tasks 2.1, 2.3, 2.4). Invariant 8 of the framework:
+	 * Reopen a session whose storage failed (tasks 2.1, 2.3, 2.4, 2.6, 2.7). Invariant 8 of the framework:
 	 * a storage error is fatal to the open session, which must be reopened — the reopen decides the
 	 * committed prefix, so the transcript is read again rather than rebuilt from memory.
 	 */
 	async #recover(): Promise<void> {
-		if (this.#recovering || this.#reopen === undefined) return;
+		// An in-memory session cannot be reopened: a second open would start empty and present a
+		// different session as if it were this one (task 2.6).
+		if (this.#reopen === undefined) {
+			this.#onFailure("the session cannot be reopened: an in-memory session keeps nothing to reopen");
+			return;
+		}
+		if (this.#recovering) return;
 		this.#recovering = true;
 		const conversationId = this.#conversation.id;
 		try {
 			while (true) {
 				this.#reopenAttempts += 1;
 				try {
-					await this.#harness.close(CONTEXT).catch(() => {});
-					await this.#closeStorage().catch(() => {});
+					// A dead server can hang either close instead of failing it, so both are bounded
+					// by the same wait the signal handler uses (task 2.5).
+					await withTimeout(this.#harness.close(CONTEXT), CLOSE_TIMEOUT_MS);
+					await withTimeout(this.#closeStorage(), CLOSE_TIMEOUT_MS);
 					const reopened = await this.#reopen();
 					this.#harness = reopened.harness;
 					this.#closeStorage = reopened.closeStorage;
@@ -829,8 +864,15 @@ export class HarnessEngine {
 					this.#onFailure(`session reopened at conversation ${String(conversationId)}`);
 					return;
 				} catch (error) {
-					// The server may still be down: report, wait, try again (task 2.4).
-					this.#onFailure(`reopen attempt ${this.#reopenAttempts} failed: ${error instanceof Error ? error.message : String(error)}`);
+					// The server may still be down: report, wait, try again (task 2.4). A lock refusal
+					// here is our own previous connection, not another process (task 2.7).
+					const name = error instanceof Error ? error.name : "";
+					const detail = error instanceof Error ? error.message : String(error);
+					this.#onFailure(
+						name === "SessionLockedError"
+							? `reopen attempt ${this.#reopenAttempts}: waiting for the previous connection to be released (${detail})`
+							: `reopen attempt ${this.#reopenAttempts} failed: ${detail}`,
+					);
 					await new Promise((resolve) => setTimeout(resolve, reopenDelayMs(this.#reopenAttempts)));
 				}
 			}

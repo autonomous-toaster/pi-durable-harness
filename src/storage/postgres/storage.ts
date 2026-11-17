@@ -34,6 +34,8 @@ export interface PostgresStorageOptions {
 	readonly prefix: string;
 	/** The session as the user names it, for messages. */
 	readonly session?: string;
+	/** Called when the storage's own connection dies, so the host can reopen (task 3.3). */
+	readonly onError?: (error: unknown) => void;
 }
 
 /** Signed 64-bit advisory-lock key for a schema and session prefix (FNV-1a). */
@@ -48,7 +50,10 @@ export function advisoryKey(name: string): bigint {
 }
 
 export async function openPostgresStorage(options: PostgresStorageOptions): Promise<SqliteStorage> {
-	const database = await PostgresDatabase.open(options.pool, options.schema, { prefix: options.prefix });
+	const database = await PostgresDatabase.open(options.pool, options.schema, {
+		prefix: options.prefix,
+		...(options.onError === undefined ? {} : { onError: options.onError }),
+	});
 	try {
 		if (!(await database.tryAdvisoryLock(advisoryKey(`${options.schema}\u0000${options.prefix}`)))) {
 			throw new SessionLockedError(options.session ?? options.prefix, options.schema);

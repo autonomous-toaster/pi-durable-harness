@@ -152,8 +152,20 @@ export class PostgresDatabase implements SqliteDatabase {
 	}
 
 	/** Acquire one connection, create the session schema, and target it. */
-	static async open(pool: Pool, schema: string, options?: { readonly prefix: string }): Promise<PostgresDatabase> {
+	static async open(
+		pool: Pool,
+		schema: string,
+		options?: {
+			readonly prefix: string;
+			/** Called when this checked-out connection dies: `pg` only guards idle pool clients, so an
+			 *  unhandled error on the storage's own client terminates the process (task 3.3). */
+			readonly onError?: (error: unknown) => void;
+		},
+	): Promise<PostgresDatabase> {
 		const client = await pool.connect();
+		// The storage keeps this client for the session's life; without a listener, a server that
+		// goes away emits `error` here and Node treats it as fatal.
+		client.on("error", (error: Error) => options?.onError?.(error));
 		try {
 			await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(schema)}`);
 			await client.query(`SET search_path TO ${quoteIdent(schema)}`);
