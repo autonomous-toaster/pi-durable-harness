@@ -35,6 +35,7 @@ import type { HarnessConfig } from "./config.js";
 import { createHarnessSettings } from "./settings.js";
 import { createCacheWarming, type CacheWarming } from "./warming.js";
 import { projectEntries } from "./projection.js";
+import { classifyReport, outcomeLine, reopenDelayMs, shouldStamp, unansweredReason } from "./reports.js";
 import { advanceCursor, appendedMessages, lastAnswerOf, planRead, rewritesContext, type SnapshotCursor } from "./read-plan.js";
 import { createPromptExtension, type PromptResources } from "./prompt.js";
 import { skillCommands, type RpcCommandInfo } from "./skills.js";
@@ -60,6 +61,18 @@ import { ControlEntry, PolicyEntry, renderTranscriptHtml, type ControlData, type
 import type { Revision, RevisionStream } from "./events.js";
 
 const CONTEXT = BACKGROUND_CONTEXT;
+
+/**
+ * A prompt arrived while a failed session was being reopened (task 2.2). The framework's invariant 8
+ * means commits reject in that window, so the host refuses the work by name instead of letting each
+ * commit surface as a storage error.
+ */
+export class SessionRecoveringError extends Error {
+	constructor() {
+		super("the session is recovering from a storage failure; retry when it has reopened");
+		this.name = "SessionRecoveringError";
+	}
+}
 
 /** Append pi's `Codemode:` line to a callable tool's description (task 5.6). */
 function appendCodemodeLine(tool: import("@earendil-works/pi-durable").ToolRegistration): void {
@@ -181,12 +194,13 @@ export interface HarnessEngineOptions {
 }
 
 export class HarnessEngine {
-	readonly #harness: Harness;
+	/** Replaced by a reopen after a storage failure (task 2.1). */
+	#harness: Harness;
 	readonly #settingsManager: SettingsManager;
 	readonly #modelRuntime: ModelRuntime;
-	readonly #closeStorage: () => Promise<void>;
+	#closeStorage: () => Promise<void>;
 	/** Records that the session was used; PostgreSQL keeps a catalog, SQLite has mtime. */
-	readonly #stamp: (() => Promise<void>) | undefined;
+	#stamp: (() => Promise<void>) | undefined;
 	/** `--models`: the models startup and cycling may use, in pattern order. */
 	readonly #modelScope: readonly ScopedModel[];
 	readonly #resources: PromptResources;
@@ -222,6 +236,18 @@ export class HarnessEngine {
 	#policy: Policy = {};
 	/** The agent the last read saw, so a status answer reads no entry (task 3.2). */
 	#agent: Awaited<ReturnType<Conversation["agent"]>> | undefined;
+	/** True while a failed session is being reopened; prompts are refused meantime (task 2.2). */
+	#recovering = false;
+	/** Reopen attempts that failed, for the backoff (task 2.4). */
+	#reopenAttempts = 0;
+	/** Where a framework failure is shown: the interface's error line, or stderr (task 1.2). */
+	#onFailure: (line: string) => void = (line) => process.stderr.write(`pi-durable: ${line}\n`);
+	/** How the session is opened again after a storage failure (task 2.1). */
+	#reopen: (() => Promise<{ harness: Harness; conversation: Conversation; closeStorage: () => Promise<void>; stamp?: () => Promise<void> }>) | undefined;
+	/** When the catalog stamp last ran, so a turn does not spend a round trip on it (task 5.1). */
+	#stampedAt = 0;
+	/** The last run's answer or the reason it had none (task 4.1). */
+	#lastOutcome: { readonly answered: boolean; readonly reason?: string } = { answered: false };
 
 	private constructor(options: {
 		harness: Harness;
@@ -238,6 +264,7 @@ export class HarnessEngine {
 		modelScope?: readonly ScopedModel[];
 		warming?: CacheWarming;
 		branch?: unknown[];
+		reopen?: () => Promise<{ harness: Harness; conversation: Conversation; closeStorage: () => Promise<void>; stamp?: () => Promise<void> }>;
 	}) {
 		this.#harness = options.harness;
 		this.#conversation = options.conversation;
@@ -253,6 +280,7 @@ export class HarnessEngine {
 		this.#modelScope = options.modelScope ?? [];
 		this.#warming = options.warming;
 		this.#branch = options.branch ?? [];
+		this.#reopen = options.reopen;
 	}
 
 	static async open(options: HarnessEngineOptions): Promise<HarnessEngine> {
@@ -335,6 +363,12 @@ export class HarnessEngine {
 						.catch(() => {});
 				},
 			});
+			// The engine is built after the harness, so the report handler reaches it through this
+			// handle. A report is how the framework says a session failed or a task faulted (tasks 1.1, 1.2).
+			let engineRef: HarnessEngine | undefined;
+			const onReport = (report: { readonly kind?: string; readonly error?: unknown; readonly reason?: string }): void => {
+				engineRef?.handleReport(report);
+			};
 			const harness = await Harness.open(
 				opened.storage,
 				{
@@ -342,7 +376,7 @@ export class HarnessEngine {
 					registry,
 					settings,
 					env: envs.env,
-					onReport: () => {},
+					onReport,
 				},
 				CONTEXT,
 			);
@@ -369,7 +403,24 @@ export class HarnessEngine {
 				identity: { config, key },
 				warming,
 				branch: holder.branch,
+				// A storage failure reopens the same session storage (task 2.1): the reopen decides
+				// the committed prefix, so nothing is reconstructed from memory.
+				reopen: async () => {
+					const again = await openSessionStorage(config, key);
+					const next = await Harness.open(
+						again.storage,
+						{ models: warming.models, registry, settings, env: envs.env, onReport },
+						CONTEXT,
+					);
+					const recorded = await currentConversation(config, key).catch(() => undefined);
+					const resumed = recorded === undefined ? undefined : await next.conversation(recorded as never, CONTEXT);
+					const conversation = resumed ?? (await next.root(CONTEXT, { agent: { ...agent, tools: declared } }));
+					next.resume();
+					holder.conversation = conversation;
+					return { harness: next, conversation, closeStorage: again.close, ...(again.stamp === undefined ? {} : { stamp: again.stamp }) };
+				},
 			});
+			engineRef = opened2;
 			opened2.#thinkingLevel = agent.thinkingLevel ?? undefined;
 			opened2.#declaredTools = declared.map((tool) => ({
 				name: tool.name,
@@ -709,6 +760,7 @@ export class HarnessEngine {
 	}
 
 	submit(content: string | readonly unknown[], whenBusy?: "steer" | "followUp" | "reject"): Promise<Submission> {
+		if (this.#recovering) return Promise.reject(new SessionRecoveringError());
 		return this.#conversation.submit(
 			whenBusy === undefined
 				? { type: "input", content: content as never }
@@ -720,6 +772,71 @@ export class HarnessEngine {
 	/** Where this session's entries live, as pi's panel and the RPC status report it (task 4.1). */
 	get sessionLocation(): string | undefined {
 		return sessionLocation(this.#identity.config, this.#identity.key);
+	}
+
+	/** Where a framework failure is shown; the interface installs its error line (task 1.2). */
+	setFailureReporter(report: (line: string) => void): void {
+		this.#onFailure = report;
+	}
+
+	/** Whether a failed session is being reopened (task 2.2). */
+	get recovering(): boolean {
+		return this.#recovering;
+	}
+
+	/** The last run: answered, or the reason it had none (task 4.1). */
+	get lastOutcome(): { readonly answered: boolean; readonly reason?: string } {
+		return this.#lastOutcome;
+	}
+
+	/**
+	 * One report from the framework (tasks 1.1, 1.2, 2.1). A failed session is reopened; a faulted
+	 * task is shown; anything else is a diagnostic. The framework calls this once per problem.
+	 */
+	handleReport(report: { readonly kind?: string; readonly error?: unknown; readonly reason?: string }): void {
+		const classified = classifyReport(report);
+		this.#onFailure(classified.line);
+		if (classified.class === "session") void this.#recover();
+	}
+
+	/**
+	 * Reopen a session whose storage failed (tasks 2.1, 2.3, 2.4). Invariant 8 of the framework:
+	 * a storage error is fatal to the open session, which must be reopened — the reopen decides the
+	 * committed prefix, so the transcript is read again rather than rebuilt from memory.
+	 */
+	async #recover(): Promise<void> {
+		if (this.#recovering || this.#reopen === undefined) return;
+		this.#recovering = true;
+		const conversationId = this.#conversation.id;
+		try {
+			while (true) {
+				this.#reopenAttempts += 1;
+				try {
+					await this.#harness.close(CONTEXT).catch(() => {});
+					await this.#closeStorage().catch(() => {});
+					const reopened = await this.#reopen();
+					this.#harness = reopened.harness;
+					this.#closeStorage = reopened.closeStorage;
+					if (reopened.stamp !== undefined) this.#stamp = reopened.stamp;
+					this.#conversation = reopened.conversation;
+					// The snapshot is read again: what storage holds is the truth after a reopen.
+					this.#cursor = { entryCount: 0, messageCount: 0 };
+					this.#records = [];
+					this.#messages = [];
+					this.#recovering = false;
+					this.#reopenAttempts = 0;
+					await this.prime().catch(() => {});
+					this.#onFailure(`session reopened at conversation ${String(conversationId)}`);
+					return;
+				} catch (error) {
+					// The server may still be down: report, wait, try again (task 2.4).
+					this.#onFailure(`reopen attempt ${this.#reopenAttempts} failed: ${error instanceof Error ? error.message : String(error)}`);
+					await new Promise((resolve) => setTimeout(resolve, reopenDelayMs(this.#reopenAttempts)));
+				}
+			}
+		} finally {
+			this.#recovering = false;
+		}
 	}
 
 	/** What the info panel prints for cache warming (task 3.4). */
@@ -748,6 +865,9 @@ export class HarnessEngine {
 		this.#warming?.onSettled();
 		// A run ended, so this session is the most recently used one (task 2.3).
 		this.markActivity();
+		const reason = unansweredReason(settled as { status?: string; reason?: string });
+		this.#lastOutcome = reason === undefined ? { answered: true } : { answered: false, reason };
+		if (reason !== undefined) this.#onFailure(outcomeLine(reason));
 		return settled.status === "done";
 	}
 
@@ -937,6 +1057,11 @@ export class HarnessEngine {
 
 	/** Record that the session was used now (task 2.3). */
 	markActivity(): void {
+		// `-c` finds a session by `last_used`; a minute is stale enough for that and costs one
+		// round trip per minute instead of one per turn (task 5.1).
+		const now = Date.now();
+		if (!shouldStamp({ now, stampedAt: this.#stampedAt })) return;
+		this.#stampedAt = now;
 		void this.#stamp?.().catch(() => {});
 	}
 

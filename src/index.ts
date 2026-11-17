@@ -18,6 +18,7 @@ import { resolveConfig, type HarnessConfig } from "./harness/config.js";
 import { HarnessEngine, openSessionStorage } from "./harness/engine.js";
 import { copySession } from "./harness/fork.js";
 import { applyThemeSelection } from "./harness/settings.js";
+import { installShutdown } from "./harness/shutdown.js";
 import { newSessionId, resolveSession } from "./harness/session.js";
 import { runOneShot } from "./harness/oneshot.js";
 import type { PromptResources } from "./harness/prompt.js";
@@ -529,6 +530,9 @@ export async function main(argv: readonly string[]): Promise<void> {
 		return typeof action?.action === "string" ? action.action : event.action;
 	});
 	const session = new HarnessSession(engine, key, bus);
+	// A signal closes the session before the process exits, so a held commit is stored and a bash
+	// child is reaped (tasks 3.1, 3.2). The normal return path closes in the `finally` below.
+	const removeShutdown = installShutdown({ close: () => engine.close() });
 	try {
 		if (config.interfaceName === "tui") {
 			// Loaded here, so pi-tui and its native module never reach the other modes.
@@ -559,6 +563,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 				config.prompts,
 				{
 					submitAndWait: (content) => engine.submitAndWait(content),
+					lastOutcome: () => engine.lastOutcome,
 					lastAssistantText: () => engine.lastAssistantText(),
 					watchEvents: () => engine.watchEvents(),
 					isQuiescent: () => engine.isQuiescent(),
@@ -573,6 +578,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 			await server.run();
 		}
 	} finally {
+		removeShutdown();
 		bus.dispatch("session_shutdown", { type: "session_shutdown", reason: "quit" });
 		await bus.idle().catch(() => {});
 		await engine.close().catch(() => {});

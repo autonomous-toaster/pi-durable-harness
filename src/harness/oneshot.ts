@@ -8,6 +8,7 @@ import type { Writable } from "node:stream";
 import type { RevisionStream } from "./events.js";
 import { encodeJsonl } from "../rpc/framing.js";
 import { EventProjector, RevisionQueue } from "./events.js";
+import { outcomeLine } from "./reports.js";
 
 const IMAGE_MIME: Readonly<Record<string, string>> = {
 	".png": "image/png",
@@ -21,6 +22,8 @@ const IMAGE_MIME: Readonly<Record<string, string>> = {
 export interface OneShotDeps {
 	/** Submit one prompt and resolve to whether it was answered. */
 	submitAndWait(content: string | readonly unknown[]): Promise<boolean>;
+	/** Answered, or the reason the run had no answer (task 4.1). */
+	lastOutcome?(): { readonly answered: boolean; readonly reason?: string };
 	lastAssistantText(): Promise<string | undefined>;
 	watchEvents(): Promise<RevisionStream>;
 	isQuiescent(): Promise<boolean>;
@@ -100,6 +103,11 @@ export async function runOneShot(
 	}
 
 	if (stop !== undefined) await stop();
+	// A run that did not answer says why, with the framework's advice (task 4.1).
+	if (!answered) {
+		const reason = deps.lastOutcome?.().reason ?? "unanswered";
+		process.stderr.write(`pi-durable: ${outcomeLine(reason)}\n`);
+	}
 	if (mode === "print") {
 		const text = await deps.lastAssistantText();
 		if (text !== undefined) deps.out.write(`${text}\n`);

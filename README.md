@@ -309,6 +309,28 @@ Storage is selected by configuration and is invisible to the client.
 | **SQLite** | default (`--no-session` aside) | One file per session at `<sessionDir>/<cwd-slug>/<tenant-slug>__<session>.sqlite`, via `node:sqlite`. A slug is the lowercased name, cut to 24 characters, plus eight hex digits of its hash, so `~/work/app` groups under `users_you_1a2b3c4d`; the file's modification time answers `-c`. |
 | **Memory** | `--no-session` | Ephemeral. |
 
+### When the storage fails
+
+A durable session's storage error is fatal to that session — the framework says so, and the only
+remedy is a reopen. This harness treats it that way: the failure is reported, the session is closed,
+reopened against the same storage and resumed, and a prompt that arrives during the reopen is refused
+by name (`the session is recovering from a storage failure`) instead of failing at commit. A reopen
+that itself fails backs off (1s, 2s, 4s … capped at 30s) and reports each attempt.
+
+Three other obligations come with being the host:
+
+- **`SIGINT`/`SIGTERM` close the session** before the process exits, so a held (deferred) commit is
+  stored and a running child is reaped. Only `SIGKILL` loses the deferred window — bounded by
+  `PI_DURABLE_PERSIST_WITHIN_MS` (500 ms on PostgreSQL).
+- **A run says why it ended.** `faulted` (`model_error`, `no_model`, `restart_limit`, `invalid_park`)
+  and `unanswered` (`turn_limit`, `nothing_to_answer`, `stale`, `aborted`) are reported with the
+  framework's advice, and a one-shot run that did not answer exits non-zero.
+- **A turn does not spend a stamp it does not need**: the `harness_sessions` catalog is written once
+  at open, once on a process's first turn, and at most once a minute after.
+
+One turn costs **66 statements (22 distinct, 5 commits)** on PostgreSQL; the framework's own floor is
+12 storage calls per single-tool-call run, which the facade turns into several statements each.
+
 ### What a session reads
 
 A session's storage is read in proportion to what changed, because a billed backend charges for
