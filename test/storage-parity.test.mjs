@@ -6,8 +6,9 @@ import { MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable"
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import pg from "pg";
 import { openPostgresStorage } from "../dist/storage/postgres/storage.js";
+import { testDatabase } from "./support-database.mjs";
 
-const url = process.env.TEST_DATABASE_URL;
+const { url } = testDatabase();
 const context = BACKGROUND_CONTEXT;
 
 /** A canonical script that exercises identity, commit, and scan. */
@@ -38,7 +39,8 @@ test("storage selection is invisible to the client", { skip: url === undefined }
 	const schema = `harness_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
 	const pool = new pg.Pool({ connectionString: url });
 	const memory = new MemoryStorage();
-	const postgres = await openPostgresStorage({ pool, schema });
+	// Every table leads with the session column, so the parity fixture needs a prefix too.
+	const postgres = await openPostgresStorage({ pool, schema, prefix: `s_${randomUUID().replaceAll("-", "").slice(0, 12)}_` });
 	try {
 		const fromMemory = await observe(memory);
 		const fromPostgres = await observe(postgres);

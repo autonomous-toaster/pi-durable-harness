@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { resolveConfig } from "../dist/harness/config.js";
+import { cliEnv } from "./support-cli.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -21,7 +22,7 @@ function rpc(args, sessionDir, timeoutMs = 20_000) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [join(root, "dist", "cli.js"), "--mode", "rpc", "--session-dir", sessionDir, ...args], {
 			cwd: root,
-			env: { ...process.env, PI_OFFLINE: "1" },
+			env: cliEnv(),
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		const records = [];

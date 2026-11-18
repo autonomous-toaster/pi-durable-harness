@@ -63,6 +63,11 @@ export async function openPostgresStorage(options: PostgresStorageOptions): Prom
 		// nothing to do.
 		await database.ensureSchema(initialSchemaStatements(), SCHEMA_VERSION, options.session ?? options.prefix);
 		const storage = await SqliteStorage.open(database, { prefix: options.prefix });
+		// A document materializes from its base and its revisions, which is more than one statement;
+		// the wrap pins them to one committed state (task 3.1). `document` is the only read the core
+		// exposes whose implementation spans statements.
+		const readDocument = storage.document.bind(storage);
+		storage.document = (id, at, context) => database.snapshot(() => readDocument(id, at, context));
 		await database.applyReferences();
 		return storage;
 	} catch (error) {

@@ -7,6 +7,8 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -15,9 +17,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function runRpc(args, command, timeoutMs = 20_000) {
 	return new Promise((resolve, reject) => {
+		// An isolated agent directory: the launch contract does not depend on the machine's MCP
+		// servers or themes, and a configured server can spend ten seconds failing to connect.
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-startup-"));
 		const child = spawn(process.execPath, [join(root, "dist", "cli.js"), ...args], {
 			cwd: root,
-			env: { ...process.env, PI_OFFLINE: "1" },
+			env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_DIR: agentDir },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		const records = [];

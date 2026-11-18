@@ -5,9 +5,9 @@ import pg from "pg";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createStorageConformance } from "@earendil-works/pi-durable/testing";
 import { openPostgresStorage, SessionLockedError } from "../dist/storage/postgres/storage.js";
+import { testDatabase } from "./support-database.mjs";
 
-const url = process.env.TEST_DATABASE_URL;
-const skip = url === undefined;
+const { url, skip } = testDatabase();
 
 const assertions = {
 	ok(value, message) {
@@ -43,8 +43,11 @@ function isPartial(actual, expected) {
 
 async function withStorage(use) {
 	const schema = `harness_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+	// One session per fixture: every table leads with the session column, so a storage without a
+	// prefix cannot be scoped at all.
+	const prefix = `s_${randomUUID().replaceAll("-", "").slice(0, 12)}_`;
 	const pool = new pg.Pool({ connectionString: url });
-	const storage = await openPostgresStorage({ pool, schema });
+	const storage = await openPostgresStorage({ pool, schema, prefix });
 	try {
 		await use(storage);
 	} finally {
@@ -60,10 +63,11 @@ for (const conformanceCase of createStorageConformance({ assertions, withStorage
 
 test("a second writer for the same session is refused", { skip }, async () => {
 	const schema = `harness_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+	const prefix = `s_${randomUUID().replaceAll("-", "").slice(0, 12)}_`;
 	const pool = new pg.Pool({ connectionString: url });
-	const first = await openPostgresStorage({ pool, schema });
+	const first = await openPostgresStorage({ pool, schema, prefix });
 	try {
-		await assert.rejects(openPostgresStorage({ pool, schema }), (error) => error instanceof SessionLockedError);
+		await assert.rejects(openPostgresStorage({ pool, schema, prefix }), (error) => error instanceof SessionLockedError);
 	} finally {
 		await first.close(BACKGROUND_CONTEXT);
 		await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

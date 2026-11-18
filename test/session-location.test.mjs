@@ -10,6 +10,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { cliEnv } from "./support-cli.mjs";
 
 const { sessionLocation } = await import("../dist/harness/session.js");
 
@@ -55,7 +56,7 @@ test("the RPC status reports the same string the panel prints", async () => {
 		const child = execFile(
 			process.execPath,
 			[join(root, "dist", "cli.js"), "--mode", "rpc", "--session-dir", sessionDir, "--session-id", "located"],
-			{ cwd: root, env: { ...process.env, PI_OFFLINE: "1" } },
+			{ cwd: root, env: cliEnv() },
 		);
 		const seen = [];
 		let buffer = "";
@@ -100,7 +101,7 @@ test("an ephemeral session reports no location over RPC", async () => {
 	const records = await new Promise((resolve, reject) => {
 		const child = execFile(process.execPath, [join(root, "dist", "cli.js"), "--mode", "rpc", "--no-session"], {
 			cwd: root,
-			env: { ...process.env, PI_OFFLINE: "1" },
+			env: cliEnv(),
 		});
 		const seen = [];
 		let buffer = "";

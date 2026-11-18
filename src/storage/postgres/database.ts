@@ -14,15 +14,17 @@ import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-work
 import { translateStatement } from "./ddl.js";
 import { addForeignKeys, applyLayout, scopeRoleSetup, type TranslationContext } from "./layout.js";
 
-let typesConfigured = false;
 
-function configureTypes(): void {
-	if (typesConfigured) return;
-	typesConfigured = true;
-	pg.types.setTypeParser(20, (value) => Number(value));
-	pg.types.setTypeParser(114, (value) => value);
-	pg.types.setTypeParser(3802, (value) => value);
-}
+/**
+ * The storage's own type parsing (task 2.1). Ids and sequences are `bigint`, and durable requires
+ * them as numbers; passing this per query keeps every other `pg` consumer in the process on the
+ * driver's defaults, which a global `setTypeParser` would have changed (a library must not mutate
+ * shared driver state).
+ */
+const STORAGE_TYPES = {
+	getTypeParser: (oid: number, format: string) =>
+		oid === 20 && format !== "binary" ? (value: string) => Number(value) : pg.types.getTypeParser(oid as never, format as never),
+} as never;
 
 export function quoteIdent(name: string): string {
 	if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`Invalid identifier: ${name}`);
@@ -88,7 +90,7 @@ async function statement(
 	const applied = context === undefined ? { sql: translated, after: [] } : await applyLayout(translated, context);
 	// The scoped statement runs first: the policy statements act on the table it
 	// creates, so running them before it is a relation that does not exist yet.
-	const result = await client.query(applied.sql, params.map(normalize));
+	const result = await client.query({ text: applied.sql, values: params.map(normalize), types: STORAGE_TYPES } as never);
 	for (const follow of applied.after) await client.query(follow);
 	return result;
 }
@@ -117,7 +119,7 @@ class PostgresExecutor implements SqliteExecutor {
 		const expanded = expandJsonInsert(sql, params);
 		if (expanded !== undefined) {
 			const applied = this.layout === undefined ? { sql: expanded.sql, after: [] } : await applyLayout(expanded.sql, this.layout);
-			await this.client.query(applied.sql, expanded.params.map(normalize));
+			await this.client.query({ text: applied.sql, values: expanded.params.map(normalize), types: STORAGE_TYPES } as never);
 			for (const follow of applied.after) await this.client.query(follow);
 			return;
 		}
@@ -141,12 +143,13 @@ class PostgresExecutor implements SqliteExecutor {
 export class PostgresDatabase implements SqliteDatabase {
 	readonly #client: PoolClient;
 	#tail: Promise<unknown> = Promise.resolve();
+	/** Depth of the current operation, so work started *by* a snapshot runs on the same client. */
+	#depth = 0;
 	#closed = false;
 
 	readonly #layout: TranslationContext | undefined;
 
 	private constructor(client: PoolClient, layout: TranslationContext | undefined) {
-		configureTypes();
 		this.#client = client;
 		this.#layout = layout;
 	}
@@ -185,6 +188,9 @@ export class PostgresDatabase implements SqliteDatabase {
 	}
 
 	#enqueue<T>(operation: () => Promise<T>): Promise<T> {
+		// Inside a snapshot the work belongs to that transaction: queueing it would wait behind the
+		// snapshot that started it.
+		if (this.#depth > 0) return operation();
 		if (this.#closed) return Promise.reject(new Error("PostgresDatabase is closed"));
 		const next = this.#tail.then(operation, operation);
 		this.#tail = next.then(
@@ -239,6 +245,31 @@ export class PostgresDatabase implements SqliteDatabase {
 		});
 	}
 
+	/**
+	 * Run a multi-statement read against one committed state (task 3.1). `READ COMMITTED` would let a
+	 * commit land between two statements of the same document read; a repeatable-read snapshot pins
+	 * the state for the whole callback.
+	 */
+	snapshot<T>(callback: () => Promise<T>): Promise<T> {
+		// Re-entrant on purpose: the read being wrapped is durable's own `document()`, which issues its
+		// statements through this same facade. A queued inner call would wait behind the snapshot.
+		if (this.#depth > 0) return callback();
+		return this.#enqueue(async () => {
+			await this.#client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+			this.#depth += 1;
+			try {
+				const value = await callback();
+				await this.#client.query("COMMIT");
+				return value;
+			} catch (error) {
+				await this.#client.query("ROLLBACK").catch(() => {});
+				throw error;
+			} finally {
+				this.#depth -= 1;
+			}
+		});
+	}
+
 	/** Drop the session schema and everything in it. Used by tests; not part of Storage. */
 	dropSchema(schema: string): Promise<void> {
 		return this.#enqueue(async () => {
@@ -288,7 +319,15 @@ export class PostgresDatabase implements SqliteDatabase {
 		return this.#enqueue(async () => {
 			if (this.#closed) return;
 			this.#closed = true;
-			this.#client.release();
+			// A released connection goes back to the pool as the caller found it. `SET ROLE` (and the
+			// session setting) are connection state, so a pool the host owns would otherwise hand the
+			// scope role to unrelated work — and the role does not own the schema (task 2.2).
+			await this.#client.query("RESET ROLE").catch(() => {});
+			await this.#client.query("RESET app.session").catch(() => {});
+			// Destroy the connection rather than return it: the ownership lock is a session lock, and
+			// a pooled connection would keep holding it (or, worse, hand it to the next open, where an
+			// advisory lock is re-entrant and the second writer would be admitted).
+			this.#client.release(true);
 		});
 	}
 }

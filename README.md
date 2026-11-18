@@ -372,7 +372,7 @@ those commits (which a managed provider bills as egress) shrinks with it. The st
 unchanged; only mid-answer progress is coarser. `PI_DURABLE_PERSIST_WITHIN_MS=0` restores a commit
 per partial, and a SQLite session still stores each partial as it arrives.
 
-PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. The backend creates the schema itself, in its final shape, and records durable's current schema version — so the core's migration pass, which exists to upgrade databases an older build made, has nothing to apply. Six references the portable core cannot declare are added after the tables: entries, tasks, and submissions to their conversation, a conversation to its owner conversation and to its task, and a document revision to its document. They are `DEFERRABLE INITIALLY DEFERRED`, because durable writes a conversation before the task that owns it.
+PostgreSQL reuses durable's portable `SqliteStorage` core over a facade (`src/storage/postgres/`), so commit, scan, and document behavior is durable's, not a reimplementation. The dialect shim (`ddl.ts`) rewrites `?`→`$n`, `INTEGER`→`BIGINT`, drops `STRICT` and the `json_valid` checks, maps `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and translates the multi-row statements a `1.5.2` commit issues: `json_each(?)`→`json_array_elements(?::json)`, `json_extract(x.value, '$[n]')`→`(x.value #>> '{n}')` (with the `bigint` casts those comparisons need), and `INSERT … SELECT … FROM json_each(?)` expanded to a `VALUES` list of real bindings (`database.ts`), so each cell takes its column's type. The backend creates the schema itself, in its final shape, and records durable's current schema version — so the core's migration pass, which exists to upgrade databases an older build made, has nothing to apply. Five references the portable core cannot declare are added after the tables: entries, tasks, and submissions to their conversation, a conversation to its owner conversation, and a document revision to its document. There is deliberately none for `conversations.owner_task_id`: the framework's conformance suite stores a conversation that names an owner task the store does not hold, because an owner edge is data the scheduler resolves — and upstream, not our schema, defines what a legal store is. They are `DEFERRABLE INITIALLY DEFERRED`, because durable writes a conversation before the task that owns it.
 
 One session writes a storage at a time, as durable requires. The advisory lock is keyed on the schema and the session's prefix; a second process on the same session is refused, and told which session it was:
 
@@ -593,10 +593,19 @@ Durable entries are canonical; a versioned adapter (`src/harness/projection.ts`)
 
 ## Testing
 
+The PostgreSQL suite is the framework's own storage conformance suite plus a parity case against the
+reference storage and a snapshot read; it needs a real database and skips without one, **except in a
+gate**, where a missing `TEST_DATABASE_URL` fails. That distinction exists because the suite once sat
+in this tree, red, unrun: it is the reason this repository has a CI workflow with a `postgres:17`
+service rather than a checklist. What the suite proves is the framework's definition of a legal
+store — atomic commits, fork scans, cursor continuation, document materialization — which is exactly
+the behaviour this backend is not allowed to invent past.
+
 ```bash
 npm run check                                   # typecheck + build + tests (SQLite/unit)
 TEST_DATABASE_URL=postgres://user:pass@host/db \
-  npm run check                                 # adds PostgreSQL conformance + parity tests
+  npm run check                                 # adds the PostgreSQL conformance, parity and snapshot suites
+CI=true TEST_DATABASE_URL=... npm run check     # what CI runs: a missing database is a failure, not a skip
 node tools/capture-fixtures.mjs                 # re-capture golden pi RPC fixtures
 PI_ACCEPT_PROMPT=1 node tools/acceptance.mjs    # drive the harness as an external client
 npm run differential                            # diff the model request against pi (mock model + MCP fixture)

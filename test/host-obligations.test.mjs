@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { cliEnv } from "./support-cli.mjs";
 
 const { classifyReport, adviceFor, unansweredReason, outcomeLine } = await import("../dist/harness/reports.js");
 
@@ -132,7 +133,7 @@ test("the CLI closes on SIGTERM and reports it", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "pi-signal-"));
 	const child = spawn(process.execPath, [join(root, "dist", "cli.js"), "--mode", "rpc", "--session-dir", dir, "--session-id", "signal-probe"], {
 		cwd: root,
-		env: { ...process.env, PI_OFFLINE: "1" },
+		env: cliEnv(),
 	});
 	let stderr = "";
 	let stdout = "";
@@ -144,7 +145,7 @@ test("the CLI closes on SIGTERM and reports it", async () => {
 	});
 	child.stdin.write(`${JSON.stringify({ id: "boot", type: "get_state" })}\n`);
 	// The session is up when it answers, so the signal lands on a live host rather than a boot.
-	for (let attempt = 0; attempt < 200 && !answered; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+	for (let attempt = 0; attempt < 600 && !answered; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 100));
 	assert.ok(answered, `the session never answered; stderr: ${stderr.slice(-300)}`);
 	child.kill("SIGTERM");
 	const code = await new Promise((resolve) => child.on("close", (status, signal) => resolve(status ?? signal)));

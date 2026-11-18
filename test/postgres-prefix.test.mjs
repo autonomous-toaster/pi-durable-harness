@@ -9,9 +9,9 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import pg from "pg";
 import { openPostgresStorage, SessionLockedError } from "../dist/storage/postgres/storage.js";
+import { testDatabase } from "./support-database.mjs";
 
-const url = process.env.TEST_DATABASE_URL;
-const skip = url === undefined;
+const { url, skip } = testDatabase();
 
 test("two prefixes share one schema and one prefix is refused twice", { skip }, async () => {
 	const schema = `harness_prefix_${randomUUID().replaceAll("-", "").slice(0, 12)}`;

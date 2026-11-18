@@ -68,9 +68,12 @@ test("the storage layer takes no option to bypass the writer lock", async () => 
 test("the backend declares the references the portable core cannot", async () => {
 	const { addForeignKeys } = await import("../dist/storage/postgres/layout.js");
 	const added = addForeignKeys();
-	assert.equal(added.length, 6);
-	// Every one is deferred: durable writes a conversation before the task that owns it,
-	// and rebuilds tables by dropping them, so checks belong at commit.
+	assert.equal(added.length, 5);
+	// Five, not six: `conversations.owner_task_id` is data the scheduler resolves, and the framework's
+	// conformance suite stores a conversation naming a task that is not stored. A reference there
+	// would refuse a store upstream defines as legal.
+	assert.ok(!added.some((sql) => /owner_task_id/.test(sql)));
+	// Every one is deferred: durable rebuilds tables by dropping them, so checks belong at commit.
 	for (const sql of added) assert.match(sql, /DEFERRABLE INITIALLY DEFERRED/);
 	assert.ok(added.some((sql) => /entries_conversation_fk/.test(sql) && /\(session, conversation_id\) REFERENCES conversations \(session, id\)/.test(sql)));
 	// The one child that is replaced wholesale carries its document with it.

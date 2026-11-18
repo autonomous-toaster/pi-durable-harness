@@ -136,9 +136,10 @@ const FOREIGN_KEYS: readonly ForeignKey[] = [
 	{ name: "tasks_conversation_fk", table: "tasks", column: "conversation_id", parent: "conversations" },
 	{ name: "submissions_conversation_fk", table: "submissions", column: "conversation_id", parent: "conversations" },
 	{ name: "conversations_owner_conversation_fk", table: "conversations", column: "owner_conversation_id", parent: "conversations" },
-	// A conversation may name the task that owns it, and that task belongs to a
-	// conversation: deferred, so the order the core writes them in does not matter.
-	{ name: "conversations_owner_task_fk", table: "conversations", column: "owner_task_id", parent: "tasks" },
+	// No reference for `conversations.owner_task_id`: the framework's own conformance suite writes
+	// conversations that name an owner task the store does not hold, because an owner edge is data the
+	// scheduler resolves, not a row that must already exist. Upstream defines legal storage here, so a
+	// constraint of ours that refuses it is behaviour we invented.
 	{ name: "document_revisions_document_fk", table: "document_revisions", column: "document_id", parent: "documents", cascade: true },
 ];
 
