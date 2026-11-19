@@ -57,7 +57,7 @@ import { setDeclaredTools, setMcpEntries, exposureOf, isMcpTool } from "../tools
 import { isCallable } from "../tools/exposure.js";
 import { toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import { CODEMODE_OUTPUT_TYPES } from "../tools/pi-definitions.js";
-import { computeActivation, computeDeclaredTools } from "../tools/activate.js";
+import { codemodeCallable, codemodeScope, computeActivation, computeDeclaredTools } from "../tools/activate.js";
 import { ControlEntry, PolicyEntry, renderTranscriptHtml, type ControlData, type Policy } from "./projection.js";
 import type { Revision, RevisionStream } from "./events.js";
 
@@ -332,31 +332,24 @@ export class HarnessEngine {
 				codemodeMode,
 			);
 			for (const warning of activation.warnings) process.stderr.write(`pi-durable: ${warning}\n`);
-			const declared = computeDeclaredTools(
-				(
-					registry.snapshot().tools() as readonly { readonly tool: import("@earendil-works/pi-durable").ToolRegistration }[]
-				).map((entry) => entry.tool),
-				activation,
-				defaultTools,
-				codemodeMode,
-			);
-			// A script may call what the model may call; the codemode tool reads this set.
-			setDeclaredTools(declared.map((tool) => tool.name));
+			const entryTools = (
+				registry.snapshot().tools() as readonly { readonly tool: import("@earendil-works/pi-durable").ToolRegistration }[]
+			).map((entry) => entry.tool);
+			// Active and declared are different sets: mode "only" hides the direct tools from the model but
+			// keeps them usable inside codemode. Conflating the two left codemode as the only tool with
+			// nothing in it.
+			const scope = codemodeScope(entryTools, activation, defaultTools, codemodeMode);
+			const { active, declared } = scope;
+			// A script may call what the session may use, not just what the model was told about.
+			setDeclaredTools(active.map((tool) => tool.name));
 			if (activation.codemode) for (const tool of declared) appendCodemodeLine(tool);
 			if (activation.codemode) {
-				const entryTools = registry
-					.snapshot()
-					.tools() as readonly { readonly tool: import("@earendil-works/pi-durable").ToolRegistration }[];
 				const indirect = new Set(
 					(options.mcp?.entries ?? [])
 						.filter((entry) => entry.exposure === "codemode" || entry.exposure === "codemode-deferred" || entry.exposure === "deferred")
 						.map((entry) => entry.name),
 				);
-				// "only" lists every tool codemode can reach; otherwise only the indirect ones.
-				const callable = codemodeMode === "only"
-					? entryTools.filter((entry) => entry.tool.name !== "codemode" && entry.tool.name !== "tool_search").map((entry) => entry.tool)
-					: entryTools.filter((entry) => indirect.has(entry.tool.name)).map((entry) => entry.tool);
-				await configureCodemodeDescription(callable);
+				await configureCodemodeDescription(codemodeCallable(entryTools, scope, indirect, codemodeMode));
 			}
 			const envs = new ExecutionEnvs(config.cwd);
 			// The warmer needs the runtime durable calls, so it is built first and its proxy

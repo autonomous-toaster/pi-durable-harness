@@ -286,7 +286,8 @@ function discoveryGlobals(catalog: readonly DiscoveryEntry[]): CodemodeTool[] {
 				const [name] = args as [unknown];
 				if (typeof name !== "string") throw new Error("describeNamespace() expects a namespace name");
 				const members = catalog.filter((entry) => entry.namespace === name);
-				if (members.length === 0) return undefined;
+				// An unknown namespace answers an empty list: returning `undefined` turned the obvious
+				// `describeNamespace(x).tools` into a TypeError inside the script.
 				return { name, tools: members.map((entry) => ({ name: id(entry.name), description: entry.description })) };
 			},
 		},

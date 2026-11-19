@@ -79,3 +79,49 @@ export function computeDeclaredTools(
 		.sort((a, b) => rank(a.tool.name) - rank(b.tool.name) || a.index - b.index)
 		.map(({ tool }) => tool);
 }
+
+/**
+ * The two sets a codemode session needs (pi's `_getCallableTools` and the `codemode.mode` setting):
+ *
+ * - `active` is what the session may use: the direct tools pi would declare with mode "on" plus the
+ *   tools codemode activates. A script may call these.
+ * - `declared` is what the model is *told* about. In mode "only" that is codemode and tool_search
+ *   alone; the direct tools stay active, so codemode can still reach them, and hiding a declaration
+ *   is not the same as deleting the tool.
+ *
+ * Keeping the two apart is the whole point: a session whose declaration was also its script scope
+ * ended up with codemode as its only tool and no tool inside codemode.
+ */
+export interface CodemodeScope {
+	readonly active: readonly ToolRegistration[];
+	readonly declared: readonly ToolRegistration[];
+}
+
+export function codemodeScope(
+	allTools: readonly ToolRegistration[],
+	activation: Activation,
+	defaultTools: readonly string[] = [],
+	codemodeMode: "on" | "only" = "on",
+): CodemodeScope {
+	const active = computeDeclaredTools(allTools, activation, defaultTools, "on");
+	if (codemodeMode !== "only" || !activation.codemode) return { active, declared: active };
+	const declared = active.filter((tool) => tool.name === "codemode" || tool.name === "tool_search");
+	return { active, declared };
+}
+
+/**
+ * What codemode lists and lets a script call: in mode "only", every active tool; otherwise the
+ * tools kept out of the declarations (MCP with codemode or deferred exposure).
+ */
+export function codemodeCallable(
+	allTools: readonly ToolRegistration[],
+	scope: CodemodeScope,
+	indirect: ReadonlySet<string>,
+	codemodeMode: "on" | "only" = "on",
+): readonly ToolRegistration[] {
+	const wanted = codemodeMode === "only" ? scope.active : [];
+	const byName = new Map<string, ToolRegistration>();
+	for (const tool of wanted) byName.set(tool.name, tool);
+	for (const tool of allTools) if (indirect.has(tool.name)) byName.set(tool.name, tool);
+	return [...byName.values()].filter((tool) => tool.name !== "codemode" && tool.name !== "tool_search");
+}

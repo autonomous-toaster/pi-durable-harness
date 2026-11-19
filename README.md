@@ -541,6 +541,11 @@ A dialog belongs to the live connection. It settles cancelled when the run is ab
 
 ## Tools
 
+`codemode.mode: "only"` declares codemode and nothing else, and **codemode then contains the built-in
+tools**: the direct tools stay active so a script can call them, they are only hidden from the model's
+tool list. Hiding a declaration is not deleting the tool — conflating the two once left a session with
+codemode as its only tool and no tool inside codemode.
+
 Tool definitions use **pi's exact descriptions and parameter schemas** (execution stays durable's); the differential harness verifies the model request is identical to pi's.
 
 | Tool | Source | Declared by default |
